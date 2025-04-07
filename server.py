@@ -33,15 +33,24 @@ def _get_fb_access_token() -> str:
     """Get Facebook access token, reading from file only once."""
     global FB_ACCESS_TOKEN
     if FB_ACCESS_TOKEN is None:
-        try:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            token_path = os.path.join(current_dir, 'fb_token')
-            with open(token_path, 'r') as file:
-                FB_ACCESS_TOKEN = file.read().strip()
-        except FileNotFoundError:
-            raise FileNotFoundError("Facebook token file 'fb_token' not found")
-        except Exception as e:
-            raise Exception(f"Error reading Facebook token: {str(e)}")
+        possible_token_locations = [
+            'fb_token',  # Current directory
+            os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fb_token'),  # Same directory as script
+            os.path.expanduser('~/.fb-api-mcp-server/fb_token'),  # User's home directory
+            '/Applications/FB-API-MCP-Server/_internal/writable/fb_token',  # App's writable directory
+        ]
+        
+        for token_path in possible_token_locations:
+            try:
+                if os.path.exists(token_path):
+                    with open(token_path, 'r') as file:
+                        FB_ACCESS_TOKEN = file.read().strip()
+                        return FB_ACCESS_TOKEN
+            except Exception as e:
+                continue  # Try next location
+                
+        # If we get here, no token was found
+        raise FileNotFoundError("Facebook token file 'fb_token' not found in any of the expected locations")
     return FB_ACCESS_TOKEN
 
 def _make_graph_api_call(url: str, params: Dict[str, Any]) -> Dict:
@@ -761,7 +770,7 @@ def fetch_pagination_url(url: str) -> Dict:
 
 @mcp.tool()
 def refresh_facebook_token(
-    scope: str = "email,ads_read,ads_management,public_profile,business_management,catalog_management"
+    scope: str = "ads_read"
 ) -> Dict:
     """Refresh the Facebook access token using the secure auth server.
     
@@ -771,7 +780,7 @@ def refresh_facebook_token(
     
     Args:
         scope: Comma-separated string of permission scopes to request.
-            Default is "email,ads_read,ads_management,public_profile,business_management,catalog_management".
+            Default is "ads_read".
     
     Returns:
         Dict containing status information about the token refresh process.
@@ -802,7 +811,7 @@ def refresh_facebook_token(
             
             # Check status with the auth server
             response = requests.get(token_fetch_url, verify=False)  # Skip SSL verification for self-signed cert
-            
+            print('response from the server', response.text, response.status_code)
             if response.status_code != 200:
                 print(f"Error from auth server: {response.text}")
                 continue
@@ -820,15 +829,10 @@ def refresh_facebook_token(
                 # We have the token! Save it
                 access_token = data["access_token"]
                 
-                # Save to file
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                token_path = os.path.join(current_dir, 'fb_token')
-                
-                with open(token_path, 'w') as file:
-                    file.write(access_token)
-                
-                # Update the global token
-                FB_ACCESS_TOKEN = access_token
+                # Use the helper function to save the token to an accessible location
+                save_success = _save_fb_access_token(access_token)
+                if not save_success:
+                    print("Warning: Could not save token to file. Will use in memory for this session only.")
                 
                 # Verify the token works
                 verify_url = f"{FB_GRAPH_URL}/me"
@@ -858,12 +862,35 @@ def get_greeting(name: str) -> str:
     """Get a personalized greeting"""
     return f"Hello, {name}!"
 
-
-
-
-
+def _save_fb_access_token(token: str) -> bool:
+    """Save Facebook access token to a file.
+    
+    Returns True if save was successful, False otherwise.
+    """
+    global FB_ACCESS_TOKEN
+    
+    # Update the global token (this will always work even if file save fails)
+    FB_ACCESS_TOKEN = token
+    
+    # Use a single standard location
+    token_path = os.path.expanduser('~/.fb-api-mcp-server/fb_token')
+    
+    try:
+        # Create directory if it doesn't exist
+        directory = os.path.dirname(token_path)
+        os.makedirs(directory, mode=0o755, exist_ok=True)
+        
+        # Write the token file
+        with open(token_path, 'w') as file:
+            file.write(token)
+        print(f"Successfully saved token to: {token_path}")
+        return True
+    except Exception as e:
+        print(f"Error saving token: {e}")
+        return False
 
 
 if __name__ == "__main__":
     mcp.run(transport='stdio')
+    # Uncomment the line below to test token refresh directly
     # print(refresh_facebook_token(scope="ads_read"))
