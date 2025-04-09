@@ -144,7 +144,102 @@ def _build_insights_params(
     return params
 
 
+
 # --- MCP Tools ---
+
+@mcp.tool()
+def refresh_facebook_token(
+    scope: str = "email,ads_read,ads_management,public_profile,business_management,catalog_management"
+) -> Dict:
+    """Refresh the Facebook access token using the secure auth server.
+    
+    This tool communicates with the Facebook auth server (fb_host.py) to get a new token.
+    It will open a browser window for the user to authenticate with Facebook.
+    The auth server handles the token exchange securely without exposing the client credentials.
+    
+    Args:
+        scope: Comma-separated string of permission scopes to request.
+            Default is "email,ads_read,ads_management,public_profile,business_management,catalog_management".
+    
+    Returns:
+        Dict containing status information about the token refresh process.
+    """
+    
+    # Reset the cached token
+    global FB_ACCESS_TOKEN
+    FB_ACCESS_TOKEN = None
+    
+    # Step 1: Generate a unique request ID
+    request_id = str(uuid.uuid4())
+    
+    # Step 2: Define the auth server URLs
+    auth_start_url = f"{AUTH_SERVER_BASE_URL}/api/authorise/facebook/start?request_id={request_id}&scope={scope}"
+    token_fetch_url = f"{AUTH_SERVER_BASE_URL}/api/authorise/facebook/get-token?request_id={request_id}"
+    
+    # Step 3: Open browser for user to authenticate with Facebook
+    print(f"Opening browser for Facebook authentication...")
+    webbrowser.open(auth_start_url)
+    
+    # Step 4: Poll the auth server for the token
+    print("Waiting for authentication to complete...")
+    max_attempts = 6  # 1 minute (10-second intervals)
+    for attempt in range(max_attempts):
+        try:
+            # Wait between polls
+            time.sleep(10)
+            
+            # Check status with the auth server
+            response = requests.get(token_fetch_url, verify=False)  # Skip SSL verification for self-signed cert
+            
+            if response.status_code != 200:
+                print(f"Error from auth server: {response.text}")
+                continue
+                
+            data = response.json()
+            
+            if data["status"] == "pending":
+                print(f"Authentication in progress... ({attempt+1}/{max_attempts})")
+                continue
+                
+            if data["status"] == "error":
+                return {"status": "error", "message": data.get("message", "Unknown error")}
+                
+            if data["status"] == "success":
+                # We have the token! Save it
+                access_token = data["access_token"]
+                
+                # Save to file
+                current_dir = os.path.dirname(os.path.abspath(__file__))
+                token_path = os.path.join(current_dir, 'fb_token')
+                
+                with open(token_path, 'w') as file:
+                    file.write(access_token)
+                
+                # Update the global token
+                FB_ACCESS_TOKEN = access_token
+                
+                # Verify the token works
+                verify_url = f"{FB_GRAPH_URL}/me"
+                verify_params = {'access_token': access_token}
+                verify_response = requests.get(verify_url, params=verify_params)
+                verify_response.raise_for_status()
+                user_data = verify_response.json()
+                
+                return {
+                    "status": "success",
+                    "message": f"Access token successfully refreshed and saved for user {user_data.get('name', 'Unknown')}",
+                    "expires_in": data.get("expires_in", "unknown"),
+                    "user_id": user_data.get("id")
+                }
+                
+        except Exception as e:
+            print(f"Error polling for token: {str(e)}")
+    
+    return {
+        "status": "error",
+        "message": f"Timeout: Authentication did not complete within {max_attempts*10} seconds"
+    }
+
 
 @mcp.tool()
 def list_ad_accounts() -> Dict:
@@ -182,6 +277,8 @@ def get_details_of_ad_account(act_id: str, fields: list[str] = None) -> Dict:
     }
     return _make_graph_api_call(url, params)
 
+
+# --- Insigbts API Tools ---
 
 @mcp.tool()
 def get_adaccount_insights(
@@ -759,110 +856,1244 @@ def fetch_pagination_url(url: str) -> Dict:
     return response.json()
 
 
+# --- Ad Creative Tools ---
+
 @mcp.tool()
-def refresh_facebook_token(
-    scope: str = "email,ads_read,ads_management,public_profile,business_management,catalog_management"
+def get_ad_creative_by_id(
+    creative_id: str, 
+    fields: Optional[List[str]] = None,
+    thumbnail_width: Optional[int] = None, 
+    thumbnail_height: Optional[int] = None
 ) -> Dict:
-    """Refresh the Facebook access token using the secure auth server.
+    """Retrieves detailed information about a specific Facebook ad creative.
+
+    This tool interfaces with the Facebook Graph API to fetch comprehensive details
+    about an ad creative, such as its name, status, specifications, engagement metrics,
+    and associated objects (like images, videos, and pages).
+
+    Args:
+        creative_id (str): The ID of the ad creative to retrieve.
+        fields (Optional[List[str]]): A list of specific fields to retrieve. If None, 
+            returns the default set of fields. Available fields include (but are not limited to):
+            - 'account_id': Ad account ID the creative belongs to
+            - 'actor_id': ID of the Facebook actor (page/app/person) associated with this creative
+            - 'adlabels': Ad labels associated with this creative
+            - 'applink_treatment': App link treatment type
+            - 'asset_feed_spec': Specifications for dynamic ad creatives
+            - 'authorization_category': For political ads, shows authorization category
+            - 'body': Ad body text content
+            - 'branded_content_sponsor_page_id': ID of the sponsor page for branded content
+            - 'call_to_action_type': Type of call to action button
+            - 'effective_authorization_category': Effective authorization category for the ad
+            - 'effective_instagram_media_id': Instagram media ID used in the ad
+            - 'effective_instagram_story_id': Instagram story ID used in the ad
+            - 'effective_object_story_id': Object story ID used for the ad
+            - 'id': Creative ID
+            - 'image_hash': Hash of the image used in the creative
+            - 'image_url': URL of the image used
+            - 'instagram_actor_id': Instagram actor ID associated with creative (deprecated)
+            - 'instagram_permalink_url': Instagram permalink URL
+            - 'instagram_story_id': Instagram story ID
+            - 'instagram_user_id': Instagram user ID associated with creative
+            - 'link_og_id': Open Graph ID for the link
+            - 'link_url': URL being advertised
+            - 'name': Name of the creative in the ad account library
+            - 'object_id': ID of the Facebook object being advertised
+            - 'object_story_id': ID of the page post used in the ad
+            - 'object_story_spec': Specification for the page post to create for the ad
+            - 'object_type': Type of the object being advertised
+            - 'object_url': URL of the object being advertised
+            - 'platform_customizations': Custom specifications for different platforms
+            - 'product_set_id': ID of the product set for product ads
+            - 'status': Status of this creative (ACTIVE, IN_PROCESS, WITH_ISSUES, DELETED)
+            - 'template_url': URL of the template used
+            - 'thumbnail_url': URL of the creative thumbnail
+            - 'title': Ad headline/title text
+            - 'url_tags': URL tags appended to landing pages for tracking
+            - 'use_page_actor_override': Use the page actor instead of ad account actor
+            - 'video_id': ID of the video used in the ad
+        
+        thumbnail_width (Optional[int]): Width of the thumbnail in pixels. Default: 64.
+        thumbnail_height (Optional[int]): Height of the thumbnail in pixels. Default: 64.
+
+    Returns:
+        Dict: A dictionary containing the requested ad creative details.
+
+    Example:
+        ```python
+        # Get basic information about an ad creative
+        creative = get_ad_creative_details(
+            creative_id="23842312323312",
+            fields=["name", "status", "object_story_id", "thumbnail_url"]
+        )
+        
+        # Get a larger thumbnail with specific dimensions
+        creative_with_thumbnail = get_ad_creative_details(
+            creative_id="23842312323312", 
+            fields=["name", "thumbnail_url"],
+            thumbnail_width=300,
+            thumbnail_height=200
+        )
+        ```
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{creative_id}"
+    params = {'access_token': access_token}
     
-    This tool communicates with the Facebook auth server (fb_host.py) to get a new token.
-    It will open a browser window for the user to authenticate with Facebook.
-    The auth server handles the token exchange securely without exposing the client credentials.
+    # Add requested fields
+    if fields:
+        params['fields'] = ','.join(fields)
+    
+    # Add thumbnail dimensions if specified
+    if thumbnail_width:
+        params['thumbnail_width'] = thumbnail_width
+    if thumbnail_height:
+        params['thumbnail_height'] = thumbnail_height
+    
+    return _make_graph_api_call(url, params)
+
+
+@mcp.tool()
+def get_ad_creatives_by_ad_id(
+    ad_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = 25,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    date_format: Optional[str] = None
+) -> Dict:
+    """Retrieves the ad creatives associated with a specific Facebook ad.
+    
+    This function accesses the Facebook Graph API to retrieve the creative objects
+    used by a specific ad, including details about the creative content, media, 
+    and specifications.
     
     Args:
-        scope: Comma-separated string of permission scopes to request.
-            Default is "email,ads_read,ads_management,public_profile,business_management,catalog_management".
+        ad_id (str): The ID of the ad to retrieve creatives for.
+        fields (Optional[List[str]]): A list of specific fields to retrieve for each creative.
+            If None, a default set of fields will be returned. Available fields include:
+            - 'id': The creative's ID
+            - 'name': The creative's name
+            - 'account_id': The ID of the ad account this creative belongs to
+            - 'actor_id': ID of the Facebook actor associated with creative
+            - 'adlabels': Ad labels applied to the creative
+            - 'applink_treatment': App link treatment type
+            - 'asset_feed_spec': Specifications for dynamic ad creatives
+            - 'authorization_category': Political ad authorization category
+            - 'body': Ad body text content
+            - 'branded_content_sponsor_page_id': ID of sponsoring page for branded content
+            - 'call_to_action_type': Type of call to action button
+            - 'effective_authorization_category': Effective authorization category
+            - 'effective_instagram_media_id': Instagram media ID used
+            - 'effective_instagram_story_id': Instagram story ID used
+            - 'effective_object_story_id': Object story ID used
+            - 'image_hash': Hash of the image used in the creative
+            - 'image_url': URL of the image used
+            - 'instagram_actor_id': Instagram actor ID (deprecated)
+            - 'instagram_permalink_url': Instagram permalink URL
+            - 'instagram_story_id': Instagram story ID
+            - 'instagram_user_id': Instagram user ID associated with creative
+            - 'link_og_id': Open Graph ID for the link
+            - 'link_url': URL being advertised
+            - 'object_id': ID of the Facebook object being advertised
+            - 'object_story_id': ID of the page post used in the ad
+            - 'object_story_spec': Specification for the page post 
+            - 'object_type': Type of the object being advertised ('PAGE', 'DOMAIN', etc.)
+            - 'object_url': URL of the object being advertised
+            - 'platform_customizations': Custom specifications for different platforms
+            - 'product_set_id': ID of the product set for product ads
+            - 'status': Status of this creative ('ACTIVE', 'IN_PROCESS', etc.)
+            - 'template_url': URL of the template used
+            - 'thumbnail_url': URL of the creative thumbnail
+            - 'title': Ad headline/title text
+            - 'url_tags': URL tags appended to landing pages for tracking
+            - 'use_page_actor_override': Whether to use the page actor instead of account actor
+            - 'video_id': ID of the video used in the ad
+        limit (Optional[int]): Maximum number of creatives to return per page. Default is 25.
+        after (Optional[str]): Pagination cursor for the next page. From response['paging']['cursors']['after'].
+        before (Optional[str]): Pagination cursor for the previous page. From response['paging']['cursors']['before'].
+        date_format (Optional[str]): Format for date responses. Options:
+            - 'U': Unix timestamp (seconds since epoch)
+            - 'Y-m-d H:i:s': MySQL datetime format
+            - None: ISO 8601 format (default)
     
     Returns:
-        Dict containing status information about the token refresh process.
+        Dict: A dictionary containing the requested ad creatives. The main results are in the 'data'
+              list, and pagination info is in the 'paging' object.
+    
+    Example:
+        ```python
+        # Get basic creative information for an ad
+        creatives = get_ad_creatives(
+            ad_id="23843211234567",
+            fields=["name", "image_url", "body", "title", "status"]
+        )
+        
+        # Get detailed creative specifications with pagination
+        detailed_creatives = get_ad_creatives(
+            ad_id="23843211234567",
+            fields=["name", "object_story_spec", "image_url", "call_to_action_type"],
+            limit=50
+        )
+        
+        # Fetch the next page if available using the pagination cursor
+        next_page_cursor = creatives.get("paging", {}).get("cursors", {}).get("after")
+        if next_page_cursor:
+            next_page = get_ad_creatives(
+                ad_id="23843211234567",
+                fields=["name", "image_url", "body", "title"],
+                limit=50,
+                after=next_page_cursor
+            )
+        ```
     """
-    
-    # Reset the cached token
-    global FB_ACCESS_TOKEN
-    FB_ACCESS_TOKEN = None
-    
-    # Step 1: Generate a unique request ID
-    request_id = str(uuid.uuid4())
-    
-    # Step 2: Define the auth server URLs
-    auth_start_url = f"{AUTH_SERVER_BASE_URL}/api/authorise/facebook/start?request_id={request_id}&scope={scope}"
-    token_fetch_url = f"{AUTH_SERVER_BASE_URL}/api/authorise/facebook/get-token?request_id={request_id}"
-    
-    # Step 3: Open browser for user to authenticate with Facebook
-    print(f"Opening browser for Facebook authentication...")
-    webbrowser.open(auth_start_url)
-    
-    # Step 4: Poll the auth server for the token
-    print("Waiting for authentication to complete...")
-    max_attempts = 6  # 1 minute (10-second intervals)
-    for attempt in range(max_attempts):
-        try:
-            # Wait between polls
-            time.sleep(10)
-            
-            # Check status with the auth server
-            response = requests.get(token_fetch_url, verify=False)  # Skip SSL verification for self-signed cert
-            
-            if response.status_code != 200:
-                print(f"Error from auth server: {response.text}")
-                continue
-                
-            data = response.json()
-            
-            if data["status"] == "pending":
-                print(f"Authentication in progress... ({attempt+1}/{max_attempts})")
-                continue
-                
-            if data["status"] == "error":
-                return {"status": "error", "message": data.get("message", "Unknown error")}
-                
-            if data["status"] == "success":
-                # We have the token! Save it
-                access_token = data["access_token"]
-                
-                # Save to file
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                token_path = os.path.join(current_dir, 'fb_token')
-                
-                with open(token_path, 'w') as file:
-                    file.write(access_token)
-                
-                # Update the global token
-                FB_ACCESS_TOKEN = access_token
-                
-                # Verify the token works
-                verify_url = f"{FB_GRAPH_URL}/me"
-                verify_params = {'access_token': access_token}
-                verify_response = requests.get(verify_url, params=verify_params)
-                verify_response.raise_for_status()
-                user_data = verify_response.json()
-                
-                return {
-                    "status": "success",
-                    "message": f"Access token successfully refreshed and saved for user {user_data.get('name', 'Unknown')}",
-                    "expires_in": data.get("expires_in", "unknown"),
-                    "user_id": user_data.get("id")
-                }
-                
-        except Exception as e:
-            print(f"Error polling for token: {str(e)}")
-    
-    return {
-        "status": "error",
-        "message": f"Timeout: Authentication did not complete within {max_attempts*10} seconds"
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{ad_id}/adcreatives"
+    params = {
+        'access_token': access_token
     }
+    
+    if fields:
+        params['fields'] = ','.join(fields)
+    
+    if limit is not None:
+        params['limit'] = limit
+    
+    if after:
+        params['after'] = after
+    
+    if before:
+        params['before'] = before
+        
+    if date_format:
+        params['date_format'] = date_format
+    
+    return _make_graph_api_call(url, params)
 
-# Add a dynamic greeting resource
-@mcp.resource("greeting://{name}")
-def get_greeting(name: str) -> str:
-    """Get a personalized greeting"""
-    return f"Hello, {name}!"
+
+# --- Ad Tools ---
+
+@mcp.tool()
+def get_ad_by_id(ad_id: str, fields: Optional[List[str]] = None) -> Dict:
+    """Retrieves detailed information about a specific Facebook ad by its ID.
+    
+    This function accesses the Facebook Graph API to retrieve information about a
+    single ad object, including details about its status, targeting, creative, budget,
+    and performance metrics.
+    
+    Args:
+        ad_id (str): The ID of the ad to retrieve information for.
+        fields (Optional[List[str]]): A list of specific fields to retrieve. If None,
+            a default set of fields will be returned. Available fields include:
+            - 'id': The ad's ID
+            - 'name': The ad's name
+            - 'account_id': The ID of the ad account this ad belongs to
+            - 'adset_id': The ID of the ad set this ad belongs to
+            - 'campaign_id': The ID of the campaign this ad belongs to
+            - 'adlabels': Labels applied to the ad
+            - 'bid_amount': The bid amount for this ad
+            - 'bid_type': The bid type of this ad
+            - 'bid_info': The bid info for this ad
+            - 'configured_status': The configured status of this ad
+            - 'conversion_domain': The conversion domain for this ad
+            - 'created_time': When the ad was created
+            - 'creative': The ad creative
+            - 'effective_status': The effective status of this ad
+            - 'issues_info': Information about issues with this ad
+            - 'recommendations': Recommendations for improving this ad
+            - 'status': The status of this ad
+            - 'tracking_specs': The tracking specs for this ad
+            - 'updated_time': When this ad was last updated
+            - 'preview_shareable_link': Link for previewing this ad
+    
+    Returns:
+        Dict: A dictionary containing the requested ad information.
+    
+    Example:
+        ```python
+        # Get basic ad information
+        ad = get_ad_by_id(
+            ad_id="23843211234567",
+            fields=["name", "adset_id", "campaign_id", "effective_status", "creative"]
+        )
+        ```
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{ad_id}"
+    params = {
+        'access_token': access_token
+    }
+    
+    if fields:
+        params['fields'] = ','.join(fields)
+    
+    return _make_graph_api_call(url, params)
 
 
+@mcp.tool()
+def get_ads_by_adaccount(
+    act_id: str,
+    fields: Optional[List[str]] = None,
+    filtering: Optional[List[dict]] = None,
+    limit: Optional[int] = 25,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    date_preset: Optional[str] = None,
+    time_range: Optional[Dict[str, str]] = None,
+    updated_since: Optional[int] = None,
+    effective_status: Optional[List[str]] = None
+) -> Dict:
+    """Retrieves ads from a specific Facebook ad account.
+    
+    This function allows querying all ads belonging to a specific ad account with
+    various filtering options, pagination, and field selection.
+    
+    Args:
+        act_id (str): The ID of the ad account to retrieve ads from, prefixed with 'act_', 
+                      e.g., 'act_1234567890'.
+        fields (Optional[List[str]]): A list of specific fields to retrieve for each ad. 
+                                      If None, a default set of fields will be returned.
+                                      Common fields include:
+            - 'id': The ad's ID
+            - 'name': The ad's name
+            - 'adset_id': The ID of the ad set this ad belongs to
+            - 'campaign_id': The ID of the campaign this ad belongs to
+            - 'creative': The ad creative details
+            - 'status': The current status of the ad
+            - 'effective_status': The effective status including review status
+            - 'bid_amount': The bid amount for this ad
+            - 'configured_status': The configured status
+            - 'created_time': When the ad was created
+            - 'updated_time': When the ad was last updated
+            - 'targeting': Targeting criteria
+            - 'conversion_specs': Conversion specs
+            - 'recommendations': Recommendations for improving the ad
+            - 'preview_shareable_link': Link for previewing the ad
+        filtering (Optional[List[dict]]): A list of filter objects to apply to the data.
+                                         Each object should have 'field', 'operator', and 'value' keys.
+        limit (Optional[int]): Maximum number of ads to return per page. Default is 25.
+        after (Optional[str]): Pagination cursor for the next page. From response['paging']['cursors']['after'].
+        before (Optional[str]): Pagination cursor for the previous page. From response['paging']['cursors']['before'].
+        date_preset (Optional[str]): A predefined relative date range for selecting ads.
+                                    Options include 'today', 'yesterday', 'this_week', etc.
+        time_range (Optional[Dict[str, str]]): A custom time range with 'since' and 'until' 
+                                              dates in 'YYYY-MM-DD' format.
+        updated_since (Optional[int]): Return ads that have been updated since this Unix timestamp.
+        effective_status (Optional[List[str]]): Filter ads by their effective status. 
+                                               Options include: 'ACTIVE', 'PAUSED', 'DELETED', 
+                                               'PENDING_REVIEW', 'DISAPPROVED', 'PREAPPROVED', 
+                                               'PENDING_BILLING_INFO', 'CAMPAIGN_PAUSED', 'ARCHIVED', 
+                                               'ADSET_PAUSED', 'IN_PROCESS', 'WITH_ISSUES'.
+    
+    Returns:
+        Dict: A dictionary containing the requested ads. The main results are in the 'data'
+              list, and pagination info is in the 'paging' object.
+    
+    Example:
+        ```python
+        # Get active ads from an ad account
+        ads = get_ads_by_adaccount(
+            act_id="act_123456789",
+            fields=["name", "adset_id", "campaign_id", "effective_status", "created_time"],
+            effective_status=["ACTIVE"],
+            limit=50
+        )
+        
+        # Fetch the next page if available using the pagination cursor
+        next_page_cursor = ads.get("paging", {}).get("cursors", {}).get("after")
+        if next_page_cursor:
+            next_page = get_ads_by_adaccount(
+                act_id="act_123456789",
+                fields=["name", "adset_id", "campaign_id", "effective_status", "created_time"],
+                effective_status=["ACTIVE"],
+                limit=50,
+                after=next_page_cursor
+            )
+        ```
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{act_id}/ads"
+    params = {
+        'access_token': access_token
+    }
+    
+    if fields:
+        params['fields'] = ','.join(fields)
+    
+    if filtering:
+        params['filtering'] = json.dumps(filtering)
+    
+    if limit is not None:
+        params['limit'] = limit
+    
+    if after:
+        params['after'] = after
+    
+    if before:
+        params['before'] = before
+    
+    if date_preset:
+        params['date_preset'] = date_preset
+    
+    if time_range:
+        params['time_range'] = json.dumps(time_range)
+    
+    if updated_since:
+        params['updated_since'] = updated_since
+    
+    if effective_status:
+        params['effective_status'] = json.dumps(effective_status)
+    
+    return _make_graph_api_call(url, params)
 
 
+@mcp.tool()
+def get_ads_by_campaign(
+    campaign_id: str,
+    fields: Optional[List[str]] = None,
+    filtering: Optional[List[dict]] = None,
+    limit: Optional[int] = 25,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    effective_status: Optional[List[str]] = None
+) -> Dict:
+    """Retrieves ads associated with a specific Facebook campaign.
+    
+    This function allows querying all ads belonging to a specific campaign,
+    with filtering options, pagination, and field selection.
+    
+    Args:
+        campaign_id (str): The ID of the campaign to retrieve ads from.
+        fields (Optional[List[str]]): A list of specific fields to retrieve for each ad.
+                                      If None, a default set of fields will be returned.
+                                      Common fields include:
+            - 'id': The ad's ID
+            - 'name': The ad's name
+            - 'adset_id': The ID of the ad set this ad belongs to
+            - 'creative': The ad creative details
+            - 'status': The current status of the ad
+            - 'effective_status': The effective status including review status
+            - 'bid_amount': The bid amount for this ad
+            - 'created_time': When the ad was created
+            - 'updated_time': When the ad was last updated
+            - 'targeting': Targeting criteria
+            - 'preview_shareable_link': Link for previewing the ad
+        filtering (Optional[List[dict]]): A list of filter objects to apply to the data.
+                                         Each object should have 'field', 'operator', and 'value' keys.
+        limit (Optional[int]): Maximum number of ads to return per page. Default is 25.
+        after (Optional[str]): Pagination cursor for the next page. From response['paging']['cursors']['after'].
+        before (Optional[str]): Pagination cursor for the previous page. From response['paging']['cursors']['before'].
+        effective_status (Optional[List[str]]): Filter ads by their effective status.
+                                               Options include: 'ACTIVE', 'PAUSED', 'DELETED',
+                                               'PENDING_REVIEW', 'DISAPPROVED', 'PREAPPROVED',
+                                               'PENDING_BILLING_INFO', 'ADSET_PAUSED', 'ARCHIVED',
+                                               'IN_PROCESS', 'WITH_ISSUES'.
+    
+    Returns:
+        Dict: A dictionary containing the requested ads. The main results are in the 'data'
+              list, and pagination info is in the 'paging' object.
+    
+    Example:
+        ```python
+        # Get all active ads from a campaign
+        ads = get_ads_by_campaign(
+            campaign_id="23843211234567",
+            fields=["name", "adset_id", "effective_status", "created_time"],
+            effective_status=["ACTIVE"],
+            limit=50
+        )
+        
+        # Fetch the next page if available using the pagination cursor
+        next_page_cursor = ads.get("paging", {}).get("cursors", {}).get("after")
+        if next_page_cursor:
+            next_page = get_ads_by_campaign(
+                campaign_id="23843211234567",
+                fields=["name", "adset_id", "effective_status", "created_time"],
+                effective_status=["ACTIVE"],
+                limit=50,
+                after=next_page_cursor
+            )
+        ```
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{campaign_id}/ads"
+    params = {
+        'access_token': access_token
+    }
+    
+    if fields:
+        params['fields'] = ','.join(fields)
+    
+    if filtering:
+        params['filtering'] = json.dumps(filtering)
+    
+    if limit is not None:
+        params['limit'] = limit
+    
+    if after:
+        params['after'] = after
+    
+    if before:
+        params['before'] = before
+    
+    if effective_status:
+        params['effective_status'] = json.dumps(effective_status)
+    
+    return _make_graph_api_call(url, params)
 
 
+@mcp.tool()
+def get_ads_by_adset(
+    adset_id: str,
+    fields: Optional[List[str]] = None,
+    filtering: Optional[List[dict]] = None,
+    limit: Optional[int] = 25,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    effective_status: Optional[List[str]] = None,
+    date_format: Optional[str] = None
+) -> Dict:
+    """Retrieves ads associated with a specific Facebook ad set.
+    
+    This function allows querying all ads belonging to a specific ad set,
+    with filtering options, pagination, and field selection.
+    
+    Args:
+        adset_id (str): The ID of the ad set to retrieve ads from.
+        fields (Optional[List[str]]): A list of specific fields to retrieve for each ad.
+                                      If None, a default set of fields will be returned.
+                                      See get_ad_by_id for a comprehensive list of available fields.
+        filtering (Optional[List[dict]]): A list of filter objects to apply to the data.
+                                         Each object should have 'field', 'operator', and 'value' keys.
+                                         Operators include: 'EQUAL', 'NOT_EQUAL', 'GREATER_THAN',
+                                         'GREATER_THAN_OR_EQUAL', 'LESS_THAN', 'LESS_THAN_OR_EQUAL',
+                                         'IN_RANGE', 'NOT_IN_RANGE', 'CONTAIN', 'NOT_CONTAIN',
+                                         'IN', 'NOT_IN', 'EMPTY', 'NOT_EMPTY'.
+        limit (Optional[int]): Maximum number of ads to return per page. Default is 25, max is 100.
+        after (Optional[str]): Pagination cursor for the next page. From response['paging']['cursors']['after'].
+        before (Optional[str]): Pagination cursor for the previous page. From response['paging']['cursors']['before'].
+        effective_status (Optional[List[str]]): Filter ads by their effective status.
+                                               Options include: 'ACTIVE', 'PAUSED', 'DELETED',
+                                               'PENDING_REVIEW', 'DISAPPROVED', 'PREAPPROVED',
+                                               'PENDING_BILLING_INFO', 'CAMPAIGN_PAUSED', 'ARCHIVED',
+                                               'IN_PROCESS', 'WITH_ISSUES'.
+        date_format (Optional[str]): Format for date responses. Options:
+                                    - 'U': Unix timestamp (seconds since epoch)
+                                    - 'Y-m-d H:i:s': MySQL datetime format
+                                    - None: ISO 8601 format (default)
+    
+    Returns:
+        Dict: A dictionary containing the requested ads. The main results are in the 'data'
+              list, and pagination info is in the 'paging' object.
+    
+    Example:
+        ```python
+        # Get all active ads from an ad set
+        ads = get_ads_by_adset(
+            adset_id="23843211234567",
+            fields=["name", "campaign_id", "effective_status", "created_time", "creative"],
+            effective_status=["ACTIVE"],
+            limit=50
+        )
+        
+        # Get ads with specific fields and date format
+        time_ads = get_ads_by_adset(
+            adset_id="23843211234567",
+            fields=["name", "created_time", "updated_time", "status"],
+            date_format="Y-m-d H:i:s"
+        )
+        
+        # Fetch the next page if available using the pagination cursor
+        next_page_cursor = ads.get("paging", {}).get("cursors", {}).get("after")
+        if next_page_cursor:
+            next_page = get_ads_by_adset(
+                adset_id="23843211234567",
+                fields=["name", "campaign_id", "effective_status", "created_time", "creative"],
+                effective_status=["ACTIVE"],
+                limit=50,
+                after=next_page_cursor
+            )
+        ```
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{adset_id}/ads"
+    params = {
+        'access_token': access_token
+    }
+    
+    if fields:
+        params['fields'] = ','.join(fields)
+    
+    if filtering:
+        params['filtering'] = json.dumps(filtering)
+    
+    if limit is not None:
+        params['limit'] = limit
+    
+    if after:
+        params['after'] = after
+    
+    if before:
+        params['before'] = before
+    
+    if effective_status:
+        params['effective_status'] = json.dumps(effective_status)
+        
+    if date_format:
+        params['date_format'] = date_format
+    
+    return _make_graph_api_call(url, params)
+
+
+# --- Ad Set Tools ---
+
+@mcp.tool()
+def get_adset_by_id(adset_id: str, fields: Optional[List[str]] = None) -> Dict:
+    """Retrieves detailed information about a specific Facebook ad set by its ID.
+    
+    This function accesses the Facebook Graph API to retrieve information about a
+    single ad set, including details about its targeting, budget, scheduling, and status.
+    
+    Args:
+        adset_id (str): The ID of the ad set to retrieve information for.
+        fields (Optional[List[str]]): A list of specific fields to retrieve. If None,
+            a default set of fields will be returned. Available fields include:
+            - 'id': The ad set's ID
+            - 'name': The ad set's name
+            - 'account_id': The ID of the ad account this ad set belongs to
+            - 'campaign_id': The ID of the campaign this ad set belongs to
+            - 'bid_amount': The bid amount for this ad set
+            - 'bid_strategy': Strategy used for bidding. Options include: 'LOWEST_COST_WITHOUT_CAP', 
+                'LOWEST_COST_WITH_BID_CAP', 'COST_CAP'
+            - 'billing_event': The billing event type. Options include: 'APP_INSTALLS', 
+                'CLICKS', 'IMPRESSIONS', 'LINK_CLICKS', 'NONE', 'OFFER_CLAIMS', 
+                'PAGE_LIKES', 'POST_ENGAGEMENT', 'THRUPLAY'
+            - 'budget_remaining': The remaining budget for this ad set (in cents/smallest currency unit)
+            - 'configured_status': The status set by the user. Options include: 'ACTIVE', 
+                'PAUSED', 'DELETED', 'ARCHIVED'
+            - 'created_time': When the ad set was created
+            - 'daily_budget': The daily budget for this ad set (in cents/smallest currency unit)
+            - 'daily_min_spend_target': The minimum daily spend target (in cents/smallest currency unit)
+            - 'daily_spend_cap': The daily spend cap (in cents/smallest currency unit)
+            - 'destination_type': Type of destination for the ads
+            - 'effective_status': The effective status (actual status). Options include: 'ACTIVE', 
+                'PAUSED', 'DELETED', 'PENDING_REVIEW', 'DISAPPROVED', 'PREAPPROVED', 
+                'PENDING_BILLING_INFO', 'CAMPAIGN_PAUSED', 'ARCHIVED', 'ADSET_PAUSED', 
+                'IN_PROCESS', 'WITH_ISSUES'
+            - 'end_time': When the ad set will end (in ISO 8601 format)
+            - 'frequency_control_specs': Specifications for frequency control
+            - 'lifetime_budget': The lifetime budget (in cents/smallest currency unit)
+            - 'lifetime_imps': The maximum number of lifetime impressions
+            - 'lifetime_min_spend_target': The minimum lifetime spend target
+            - 'lifetime_spend_cap': The lifetime spend cap
+            - 'optimization_goal': The optimization goal for this ad set. Options include: 
+                'APP_INSTALLS', 'BRAND_AWARENESS', 'CLICKS', 'ENGAGED_USERS', 'EVENT_RESPONSES', 
+                'IMPRESSIONS', 'LEAD_GENERATION', 'LINK_CLICKS', 'NONE', 'OFFER_CLAIMS', 
+                'OFFSITE_CONVERSIONS', 'PAGE_ENGAGEMENT', 'PAGE_LIKES', 'POST_ENGAGEMENT', 
+                'QUALITY_LEAD', 'REACH', 'REPLIES', 'SOCIAL_IMPRESSIONS', 'THRUPLAY', 
+                'VALUE', 'VISIT_INSTAGRAM_PROFILE'
+            - 'pacing_type': List of pacing types. Options include: 'standard', 'no_pacing'
+            - 'promoted_object': The object this ad set is promoting
+            - 'recommendations': Recommendations for improving this ad set
+            - 'rf_prediction_id': The Reach and Frequency prediction ID
+            - 'source_adset_id': ID of the source ad set if this is a copy
+            - 'start_time': When the ad set starts (in ISO 8601 format)
+            - 'status': Deprecated. The ad set's status. Use 'effective_status' instead.
+            - 'targeting': The targeting criteria for this ad set (complex object)
+            - 'time_based_ad_rotation_id_blocks': Time-based ad rotation blocks
+            - 'time_based_ad_rotation_intervals': Time-based ad rotation intervals in seconds
+            - 'updated_time': When this ad set was last updated
+            - 'use_new_app_click': Whether to use the newer app click tracking
+    
+    Returns:
+        Dict: A dictionary containing the requested ad set information.
+    
+    Example:
+        ```python
+        # Get basic ad set information
+        adset = get_adset_by_id(
+            adset_id="23843211234567",
+            fields=["name", "campaign_id", "effective_status", "targeting", "budget_remaining"]
+        )
+        
+        # Get detailed scheduling information
+        adset_schedule = get_adset_by_id(
+            adset_id="23843211234567",
+            fields=["name", "start_time", "end_time", "daily_budget", "lifetime_budget"]
+        )
+        ```
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{adset_id}"
+    params = {
+        'access_token': access_token
+    }
+    
+    if fields:
+        params['fields'] = ','.join(fields)
+    
+    return _make_graph_api_call(url, params)
+
+
+@mcp.tool()
+def get_adsets_by_ids(
+    adset_ids: List[str],
+    fields: Optional[List[str]] = None,
+    date_format: Optional[str] = None
+) -> Dict:
+    """Retrieves detailed information about multiple Facebook ad sets by their IDs.
+    
+    This function allows batch retrieval of multiple ad sets in a single API call,
+    improving efficiency when you need data for several ad sets.
+    
+    Args:
+        adset_ids (List[str]): A list of ad set IDs to retrieve information for.
+        fields (Optional[List[str]]): A list of specific fields to retrieve for each ad set.
+            If None, a default set of fields will be returned. See get_adset_by_id for
+            a comprehensive list of available fields.
+        date_format (Optional[str]): Format for date responses. Options:
+            - 'U': Unix timestamp (seconds since epoch)
+            - 'Y-m-d H:i:s': MySQL datetime format
+            - None: ISO 8601 format (default)
+    
+    Returns:
+        Dict: A dictionary where keys are the ad set IDs and values are the
+              corresponding ad set details.
+    
+    Example:
+        ```python
+        # Get information for multiple ad sets
+        adsets = get_adsets_by_ids(
+            adset_ids=["23843211234567", "23843211234568", "23843211234569"],
+            fields=["name", "campaign_id", "effective_status", "budget_remaining"],
+            date_format="U"  # Get dates as Unix timestamps
+        )
+        
+        # Access information for a specific ad set
+        if "23843211234567" in adsets:
+            print(adsets["23843211234567"]["name"])
+        ```
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/"
+    params = {
+        'access_token': access_token,
+        'ids': ','.join(adset_ids)
+    }
+    
+    if fields:
+        params['fields'] = ','.join(fields)
+        
+    if date_format:
+        params['date_format'] = date_format
+    
+    return _make_graph_api_call(url, params)
+
+
+@mcp.tool()
+def get_adsets_by_adaccount(
+    act_id: str,
+    fields: Optional[List[str]] = None,
+    filtering: Optional[List[dict]] = None,
+    limit: Optional[int] = 25,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    date_preset: Optional[str] = None,
+    time_range: Optional[Dict[str, str]] = None,
+    updated_since: Optional[int] = None,
+    effective_status: Optional[List[str]] = None,
+    date_format: Optional[str] = None
+) -> Dict:
+    """Retrieves ad sets from a specific Facebook ad account.
+    
+    This function allows querying all ad sets belonging to a specific ad account with
+    various filtering options, pagination, and field selection.
+    
+    Args:
+        act_id (str): The ID of the ad account to retrieve ad sets from, prefixed with 'act_', 
+                      e.g., 'act_1234567890'.
+        fields (Optional[List[str]]): A list of specific fields to retrieve for each ad set. 
+                                      If None, a default set of fields will be returned.
+                                      See get_adset_by_id for a comprehensive list of available fields.
+        filtering (Optional[List[dict]]): A list of filter objects to apply to the data.
+                                         Each object should have 'field', 'operator', and 'value' keys.
+                                         Operators include: 'EQUAL', 'NOT_EQUAL', 'GREATER_THAN',
+                                         'GREATER_THAN_OR_EQUAL', 'LESS_THAN', 'LESS_THAN_OR_EQUAL',
+                                         'IN_RANGE', 'NOT_IN_RANGE', 'CONTAIN', 'NOT_CONTAIN',
+                                         'IN', 'NOT_IN', 'EMPTY', 'NOT_EMPTY'.
+                                         Example: [{'field': 'daily_budget', 'operator': 'GREATER_THAN', 'value': 1000}]
+        limit (Optional[int]): Maximum number of ad sets to return per page. Default is 25, max is 100.
+        after (Optional[str]): Pagination cursor for the next page. From response['paging']['cursors']['after'].
+        before (Optional[str]): Pagination cursor for the previous page. From response['paging']['cursors']['before'].
+        date_preset (Optional[str]): A predefined relative date range for selecting ad sets.
+                                    Options include: 'today', 'yesterday', 'this_month', 'last_month', 
+                                    'this_quarter', 'lifetime', 'last_3d', 'last_7d', 'last_14d', 
+                                    'last_28d', 'last_30d', 'last_90d', 'last_quarter', 'last_year', 
+                                    'this_week_mon_today', 'this_week_sun_today', 'this_year'.
+        time_range (Optional[Dict[str, str]]): A custom time range with 'since' and 'until' 
+                                              dates in 'YYYY-MM-DD' format.
+                                              Example: {'since': '2023-01-01', 'until': '2023-01-31'}
+        updated_since (Optional[int]): Return ad sets that have been updated since this Unix timestamp.
+        effective_status (Optional[List[str]]): Filter ad sets by their effective status. 
+                                               Options include: 'ACTIVE', 'PAUSED', 'DELETED', 
+                                               'PENDING_REVIEW', 'DISAPPROVED', 'PREAPPROVED', 
+                                               'PENDING_BILLING_INFO', 'CAMPAIGN_PAUSED', 'ARCHIVED', 
+                                               'WITH_ISSUES'.
+        date_format (Optional[str]): Format for date responses. Options:
+                                    - 'U': Unix timestamp (seconds since epoch)
+                                    - 'Y-m-d H:i:s': MySQL datetime format
+                                    - None: ISO 8601 format (default)
+    
+    Returns:
+        Dict: A dictionary containing the requested ad sets. The main results are in the 'data'
+              list, and pagination info is in the 'paging' object.
+    
+    Example:
+        ```python
+        # Get active ad sets from an ad account
+        adsets = get_adsets_by_adaccount(
+            act_id="act_123456789",
+            fields=["name", "campaign_id", "effective_status", "daily_budget", "targeting"],
+            effective_status=["ACTIVE"],
+            limit=50
+        )
+        
+        # Get ad sets with daily budget above a certain amount
+        high_budget_adsets = get_adsets_by_adaccount(
+            act_id="act_123456789",
+            fields=["name", "daily_budget", "lifetime_budget"],
+            filtering=[{'field': 'daily_budget', 'operator': 'GREATER_THAN', 'value': 5000}],
+            limit=100
+        )
+        
+        # Fetch the next page if available using the pagination cursor
+        next_page_cursor = adsets.get("paging", {}).get("cursors", {}).get("after")
+        if next_page_cursor:
+            next_page = get_adsets_by_adaccount(
+                act_id="act_123456789",
+                fields=["name", "campaign_id", "effective_status", "daily_budget"],
+                effective_status=["ACTIVE"],
+                limit=50,
+                after=next_page_cursor
+            )
+        ```
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{act_id}/adsets"
+    params = {
+        'access_token': access_token
+    }
+    
+    if fields:
+        params['fields'] = ','.join(fields)
+    
+    if filtering:
+        params['filtering'] = json.dumps(filtering)
+    
+    if limit is not None:
+        params['limit'] = limit
+    
+    if after:
+        params['after'] = after
+    
+    if before:
+        params['before'] = before
+    
+    if date_preset:
+        params['date_preset'] = date_preset
+    
+    if time_range:
+        params['time_range'] = json.dumps(time_range)
+    
+    if updated_since:
+        params['updated_since'] = updated_since
+    
+    if effective_status:
+        params['effective_status'] = json.dumps(effective_status)
+        
+    if date_format:
+        params['date_format'] = date_format
+    
+    return _make_graph_api_call(url, params)
+
+
+@mcp.tool()
+def get_adsets_by_campaign(
+    campaign_id: str,
+    fields: Optional[List[str]] = None,
+    filtering: Optional[List[dict]] = None,
+    limit: Optional[int] = 25,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    effective_status: Optional[List[str]] = None,
+    date_format: Optional[str] = None
+) -> Dict:
+    """Retrieves ad sets associated with a specific Facebook campaign.
+    
+    This function allows querying all ad sets belonging to a specific campaign,
+    with filtering options, pagination, and field selection.
+    
+    Args:
+        campaign_id (str): The ID of the campaign to retrieve ad sets from.
+        fields (Optional[List[str]]): A list of specific fields to retrieve for each ad set.
+                                      If None, a default set of fields will be returned.
+                                      See get_adset_by_id for a comprehensive list of available fields.
+        filtering (Optional[List[dict]]): A list of filter objects to apply to the data.
+                                         Each object should have 'field', 'operator', and 'value' keys.
+                                         Operators include: 'EQUAL', 'NOT_EQUAL', 'GREATER_THAN',
+                                         'GREATER_THAN_OR_EQUAL', 'LESS_THAN', 'LESS_THAN_OR_EQUAL',
+                                         'IN_RANGE', 'NOT_IN_RANGE', 'CONTAIN', 'NOT_CONTAIN',
+                                         'IN', 'NOT_IN', 'EMPTY', 'NOT_EMPTY'.
+                                         Example: [{'field': 'daily_budget', 'operator': 'GREATER_THAN', 'value': 1000}]
+        limit (Optional[int]): Maximum number of ad sets to return per page. Default is 25, max is 100.
+        after (Optional[str]): Pagination cursor for the next page. From response['paging']['cursors']['after'].
+        before (Optional[str]): Pagination cursor for the previous page. From response['paging']['cursors']['before'].
+        effective_status (Optional[List[str]]): Filter ad sets by their effective status.
+                                               Options include: 'ACTIVE', 'PAUSED', 'DELETED',
+                                               'PENDING_REVIEW', 'DISAPPROVED', 'PREAPPROVED',
+                                               'PENDING_BILLING_INFO', 'ARCHIVED', 'WITH_ISSUES'.
+        date_format (Optional[str]): Format for date responses. Options:
+                                    - 'U': Unix timestamp (seconds since epoch)
+                                    - 'Y-m-d H:i:s': MySQL datetime format
+                                    - None: ISO 8601 format (default)
+    
+    Returns:
+        Dict: A dictionary containing the requested ad sets. The main results are in the 'data'
+              list, and pagination info is in the 'paging' object.
+    
+    Example:
+        ```python
+        # Get all active ad sets from a campaign
+        adsets = get_adsets_by_campaign(
+            campaign_id="23843211234567",
+            fields=["name", "effective_status", "daily_budget", "targeting", "optimization_goal"],
+            effective_status=["ACTIVE"],
+            limit=50
+        )
+        
+        # Get ad sets with specific optimization goals
+        conversion_adsets = get_adsets_by_campaign(
+            campaign_id="23843211234567",
+            fields=["name", "optimization_goal", "billing_event", "bid_amount"],
+            filtering=[{
+                'field': 'optimization_goal', 
+                'operator': 'IN', 
+                'value': ['OFFSITE_CONVERSIONS', 'VALUE']
+            }]
+        )
+        
+        # Fetch the next page if available using the pagination cursor
+        next_page_cursor = adsets.get("paging", {}).get("cursors", {}).get("after")
+        if next_page_cursor:
+            next_page = get_adsets_by_campaign(
+                campaign_id="23843211234567",
+                fields=["name", "effective_status", "daily_budget", "targeting"],
+                effective_status=["ACTIVE"],
+                limit=50,
+                after=next_page_cursor
+            )
+        ```
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{campaign_id}/adsets"
+    params = {
+        'access_token': access_token
+    }
+    
+    if fields:
+        params['fields'] = ','.join(fields)
+    
+    if filtering:
+        params['filtering'] = json.dumps(filtering)
+    
+    if limit is not None:
+        params['limit'] = limit
+    
+    if after:
+        params['after'] = after
+    
+    if before:
+        params['before'] = before
+    
+    if effective_status:
+        params['effective_status'] = json.dumps(effective_status)
+        
+    if date_format:
+        params['date_format'] = date_format
+    
+    return _make_graph_api_call(url, params)
+
+
+# --- Campaign Tools ---
+@mcp.tool()
+def get_campaign_by_id(
+    campaign_id: str, 
+    fields: Optional[List[str]] = None,
+    date_format: Optional[str] = None
+) -> Dict:
+    """Retrieves detailed information about a specific Facebook ad campaign by its ID.
+    
+    This function accesses the Facebook Graph API to retrieve information about a
+    single campaign, including details about its objective, status, budget settings,
+    and other campaign-level configurations.
+    
+    Args:
+        campaign_id (str): The ID of the campaign to retrieve information for.
+        fields (Optional[List[str]]): A list of specific fields to retrieve. If None,
+            a default set of fields will be returned. Available fields include:
+            - 'id': The campaign's ID
+            - 'name': The campaign's name
+            - 'account_id': The ID of the ad account this campaign belongs to
+            - 'adlabels': Labels applied to the campaign
+            - 'bid_strategy': The bid strategy for the campaign. Options include:
+                'LOWEST_COST_WITHOUT_CAP', 'LOWEST_COST_WITH_BID_CAP', 'COST_CAP'
+            - 'boosted_object_id': The ID of the boosted object
+            - 'brand_lift_studies': Brand lift studies associated with this campaign
+            - 'budget_rebalance_flag': Whether budget rebalancing is enabled
+            - 'budget_remaining': The remaining budget (in cents/smallest currency unit)
+            - 'buying_type': The buying type. Options include:
+                'AUCTION', 'RESERVED', 'DEPRECATED_REACH_BLOCK'
+            - 'can_create_brand_lift_study': Whether a brand lift study can be created
+            - 'can_use_spend_cap': Whether a spend cap can be used
+            - 'configured_status': Status set by the user. Options include:
+                'ACTIVE', 'PAUSED', 'DELETED', 'ARCHIVED'
+            - 'created_time': When the campaign was created
+            - 'daily_budget': The daily budget (in cents/smallest currency unit)
+            - 'effective_status': The effective status accounting for the ad account and other factors.
+                Options include: 'ACTIVE', 'PAUSED', 'DELETED', 'PENDING_REVIEW', 'DISAPPROVED',
+                'PREAPPROVED', 'PENDING_BILLING_INFO', 'CAMPAIGN_PAUSED', 'ARCHIVED', 'IN_PROCESS',
+                'WITH_ISSUES'
+            - 'has_secondary_skadnetwork_reporting': Whether secondary SKAdNetwork reporting is available
+            - 'is_budget_schedule_enabled': Whether budget scheduling is enabled
+            - 'is_skadnetwork_attribution': Whether the campaign uses SKAdNetwork attribution (iOS 14.5+)
+            - 'issues_info': Information about issues with this campaign
+            - 'last_budget_toggling_time': Last time the budget was toggled
+            - 'lifetime_budget': The lifetime budget (in cents/smallest currency unit)
+            - 'objective': The campaign's advertising objective. Options include:
+                'APP_INSTALLS', 'BRAND_AWARENESS', 'CONVERSIONS', 'EVENT_RESPONSES',
+                'LEAD_GENERATION', 'LINK_CLICKS', 'LOCAL_AWARENESS', 'MESSAGES',
+                'OFFER_CLAIMS', 'PAGE_LIKES', 'POST_ENGAGEMENT', 'PRODUCT_CATALOG_SALES',
+                'REACH', 'STORE_VISITS', 'VIDEO_VIEWS'
+            - 'pacing_type': List of pacing types. Options include: 'standard', 'no_pacing'
+            - 'primary_attribution': Primary attribution settings
+            - 'promoted_object': The object this campaign is promoting
+            - 'recommendations': Recommendations for improving this campaign
+            - 'smart_promotion_type': Smart promotion type if applicable
+            - 'source_campaign': Source campaign if this was created by copying
+            - 'source_campaign_id': ID of the source campaign if copied
+            - 'special_ad_categories': Array of special ad categories. Options include:
+                'EMPLOYMENT', 'HOUSING', 'CREDIT', 'ISSUES_ELECTIONS_POLITICS', 'NONE'
+            - 'special_ad_category': Special ad category (deprecated in favor of special_ad_categories)
+            - 'spend_cap': The spending cap (in cents/smallest currency unit)
+            - 'start_time': When the campaign starts (in ISO 8601 format unless date_format specified)
+            - 'status': Deprecated. Use 'configured_status' or 'effective_status' instead
+            - 'stop_time': When the campaign stops (in ISO 8601 format unless date_format specified)
+            - 'topline_id': Topline ID for this campaign
+            - 'updated_time': When this campaign was last updated
+        date_format (Optional[str]): Format for date responses. Options:
+            - 'U': Unix timestamp (seconds since epoch)
+            - 'Y-m-d H:i:s': MySQL datetime format
+            - None: ISO 8601 format (default)
+    
+    Returns:
+        Dict: A dictionary containing the requested campaign information.
+    
+    Example:
+        ```python
+        # Get basic campaign information
+        campaign = get_campaign_by_id(
+            campaign_id="23843211234567",
+            fields=["name", "objective", "effective_status", "budget_remaining"]
+        )
+        
+        # Get detailed budget information with Unix timestamps
+        campaign_budget_details = get_campaign_by_id(
+            campaign_id="23843211234567",
+            fields=["name", "daily_budget", "lifetime_budget", "start_time", "stop_time"],
+            date_format="U"
+        )
+        ```
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{campaign_id}"
+    params = {
+        'access_token': access_token
+    }
+    
+    if fields:
+        params['fields'] = ','.join(fields)
+    
+    if date_format:
+        params['date_format'] = date_format
+    
+    return _make_graph_api_call(url, params)
+
+@mcp.tool()
+def get_campaigns_by_adaccount(
+    act_id: str,
+    fields: Optional[List[str]] = None,
+    filtering: Optional[List[dict]] = None,
+    limit: Optional[int] = 25,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    date_preset: Optional[str] = None,
+    time_range: Optional[Dict[str, str]] = None,
+    updated_since: Optional[int] = None,
+    effective_status: Optional[List[str]] = None,
+    is_completed: Optional[bool] = None,
+    special_ad_categories: Optional[List[str]] = None,
+    objective: Optional[List[str]] = None,
+    buyer_guarantee_agreement_status: Optional[List[str]] = None,
+    date_format: Optional[str] = None,
+    include_drafts: Optional[bool] = None
+) -> Dict:
+    """Retrieves campaigns from a specific Facebook ad account.
+    
+    This function allows querying all campaigns belonging to a specific ad account with
+    various filtering options, pagination, and field selection.
+    
+    Args:
+        act_id (str): The ID of the ad account to retrieve campaigns from, prefixed with 'act_', 
+                      e.g., 'act_1234567890'.
+        fields (Optional[List[str]]): A list of specific fields to retrieve for each campaign.
+                                      If None, a default set of fields will be returned.
+                                      See get_campaign_by_id for a comprehensive list of available fields.
+        filtering (Optional[List[dict]]): A list of filter objects to apply to the data.
+                                         Each object should have 'field', 'operator', and 'value' keys.
+                                         Operators include: 'EQUAL', 'NOT_EQUAL', 'GREATER_THAN',
+                                         'GREATER_THAN_OR_EQUAL', 'LESS_THAN', 'LESS_THAN_OR_EQUAL',
+                                         'IN_RANGE', 'NOT_IN_RANGE', 'CONTAIN', 'NOT_CONTAIN',
+                                         'IN', 'NOT_IN', 'EMPTY', 'NOT_EMPTY'.
+                                         Example: [{'field': 'daily_budget', 'operator': 'GREATER_THAN', 'value': 1000}]
+        limit (Optional[int]): Maximum number of campaigns to return per page. Default is 25, max is 100.
+        after (Optional[str]): Pagination cursor for the next page. From response['paging']['cursors']['after'].
+        before (Optional[str]): Pagination cursor for the previous page. From response['paging']['cursors']['before'].
+        date_preset (Optional[str]): A predefined relative date range for selecting campaigns.
+                                    Options include: 'today', 'yesterday', 'this_month', 'last_month', 
+                                    'this_quarter', 'maximum', 'last_3d', 'last_7d', 'last_14d', 
+                                    'last_28d', 'last_30d', 'last_90d', 'last_week_mon_sun', 
+                                    'last_week_sun_sat', 'last_quarter', 'last_year', 
+                                    'this_week_mon_today', 'this_week_sun_today', 'this_year'.
+        time_range (Optional[Dict[str, str]]): A custom time range with 'since' and 'until' 
+                                              dates in 'YYYY-MM-DD' format.
+                                              Example: {'since': '2023-01-01', 'until': '2023-01-31'}
+        updated_since (Optional[int]): Return campaigns that have been updated since this Unix timestamp.
+        effective_status (Optional[List[str]]): Filter campaigns by their effective status. 
+                                               Options include: 'ACTIVE', 'PAUSED', 'DELETED', 
+                                               'PENDING_REVIEW', 'DISAPPROVED', 'PREAPPROVED', 
+                                               'PENDING_BILLING_INFO', 'ARCHIVED', 'WITH_ISSUES'.
+        is_completed (Optional[bool]): If True, returns only completed campaigns. If False, returns 
+                                      only active campaigns. If None, returns both.
+        special_ad_categories (Optional[List[str]]): Filter campaigns by special ad categories.
+                                                   Options include: 'EMPLOYMENT', 'HOUSING', 'CREDIT', 
+                                                   'ISSUES_ELECTIONS_POLITICS', 'NONE'.
+        objective (Optional[List[str]]): Filter campaigns by advertising objective.
+                                      Options include: 'APP_INSTALLS', 'BRAND_AWARENESS', 
+                                      'CONVERSIONS', 'EVENT_RESPONSES', 'LEAD_GENERATION', 
+                                      'LINK_CLICKS', 'LOCAL_AWARENESS', 'MESSAGES', 'OFFER_CLAIMS', 
+                                      'PAGE_LIKES', 'POST_ENGAGEMENT', 'PRODUCT_CATALOG_SALES', 
+                                      'REACH', 'STORE_VISITS', 'VIDEO_VIEWS'.
+        buyer_guarantee_agreement_status (Optional[List[str]]): Filter campaigns by buyer guarantee agreement status.
+                                                              Options include: 'APPROVED', 'NOT_APPROVED'.
+        date_format (Optional[str]): Format for date responses. Options:
+                                    - 'U': Unix timestamp (seconds since epoch)
+                                    - 'Y-m-d H:i:s': MySQL datetime format
+                                    - None: ISO 8601 format (default)
+        include_drafts (Optional[bool]): If True, includes draft campaigns in the results.
+    
+    Returns:
+        Dict: A dictionary containing the requested campaigns. The main results are in the 'data'
+              list, and pagination info is in the 'paging' object.
+    
+    Example:
+        ```python
+        # Get active campaigns from an ad account
+        campaigns = get_campaigns_by_adaccount(
+            act_id="act_123456789",
+            fields=["name", "objective", "effective_status", "created_time"],
+            effective_status=["ACTIVE"],
+            limit=50
+        )
+        
+        # Get campaigns with specific objectives
+        lead_gen_campaigns = get_campaigns_by_adaccount(
+            act_id="act_123456789",
+            fields=["name", "objective", "spend_cap", "daily_budget"],
+            objective=["LEAD_GENERATION", "CONVERSIONS"],
+            date_format="U"
+        )
+        
+        # Get campaigns created in a specific date range
+        date_filtered_campaigns = get_campaigns_by_adaccount(
+            act_id="act_123456789",
+            fields=["name", "created_time", "objective"],
+            time_range={"since": "2023-01-01", "until": "2023-01-31"}
+        )
+        
+        # Fetch the next page if available using the pagination cursor
+        next_page_cursor = campaigns.get("paging", {}).get("cursors", {}).get("after")
+        if next_page_cursor:
+            next_page = get_campaigns_by_adaccount(
+                act_id="act_123456789",
+                fields=["name", "objective", "effective_status", "created_time"],
+                effective_status=["ACTIVE"],
+                limit=50,
+                after=next_page_cursor
+            )
+        ```
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{act_id}/campaigns"
+    params = {
+        'access_token': access_token
+    }
+    
+    if fields:
+        params['fields'] = ','.join(fields)
+    
+    if filtering:
+        params['filtering'] = json.dumps(filtering)
+    
+    if limit is not None:
+        params['limit'] = limit
+    
+    if after:
+        params['after'] = after
+    
+    if before:
+        params['before'] = before
+    
+    if date_preset:
+        params['date_preset'] = date_preset
+    
+    if time_range:
+        params['time_range'] = json.dumps(time_range)
+    
+    if updated_since:
+        params['updated_since'] = updated_since
+    
+    if effective_status:
+        params['effective_status'] = json.dumps(effective_status)
+    
+    if is_completed is not None:
+        params['is_completed'] = is_completed
+    
+    if special_ad_categories:
+        params['special_ad_categories'] = json.dumps(special_ad_categories)
+    
+    if objective:
+        params['objective'] = json.dumps(objective)
+    
+    if buyer_guarantee_agreement_status:
+        params['buyer_guarantee_agreement_status'] = json.dumps(buyer_guarantee_agreement_status)
+    
+    if date_format:
+        params['date_format'] = date_format
+    
+    if include_drafts is not None:
+        params['include_drafts'] = include_drafts
+    
+    return _make_graph_api_call(url, params)
 
 if __name__ == "__main__":
     mcp.run(transport='stdio')
