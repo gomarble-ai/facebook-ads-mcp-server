@@ -2313,5 +2313,5 @@ def get_activities_by_adaccount(
 
 
 if __name__ == "__main__":
-    # mcp.run(transport='stdio')
-    print(refresh_facebook_token(scope="ads_read"))
+    mcp.run(transport='stdio')
+    # print(refresh_facebook_token(scope="ads_read"))
