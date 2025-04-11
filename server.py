@@ -8,6 +8,10 @@ import webbrowser
 import time
 import uuid
 import requests
+import os
+from pathlib import Path
+from typing import Optional # Using Optional for type hinting
+import platformdirs
     
 
 # --- Constants ---
@@ -29,19 +33,80 @@ FB_ACCESS_TOKEN = None
 
 # --- Helper Functions ---
 
+
+# --- Cross-platform directory handling ---
+# Make sure these are defined in the same scope or imported
+
+APP_NAME = "FbApiMcpServer"
+APP_AUTHOR = "Gomarble" # Needs to be the same as used in refresh_... function
+
+def get_user_data_dir() -> Path:
+    """
+    Gets the platform-specific user data directory using platformdirs
+    and ensures it exists.
+
+    Returns:
+        Path: The Path object representing the user data directory.
+    """
+    data_dir = Path(platformdirs.user_data_dir(appname=APP_NAME, appauthor=APP_AUTHOR))
+    # Ensure it exists only needed if writing, reading can just fail if missing.
+    # If you want to guarantee the dir exists even before first write:
+    data_dir.mkdir(parents=True, exist_ok=True)
+    return data_dir
+# --- End cross-platform directory handling ---
+
+
+# Global variable holding the cached token
+FB_ACCESS_TOKEN: Optional[str] = None
+
 def _get_fb_access_token() -> str:
-    """Get Facebook access token, reading from file only once."""
+    """
+    Get Facebook access token, reading from the platform-specific
+    user data directory. Caches the token in memory after first read.
+
+    Returns:
+        str: The Facebook access token.
+
+    Raises:
+        FileNotFoundError: If the token file cannot be found.
+        Exception: If there is an error reading the token file.
+    """
     global FB_ACCESS_TOKEN
     if FB_ACCESS_TOKEN is None:
         try:
-            current_dir = os.path.dirname(os.path.abspath(__file__))
-            token_path = os.path.join(current_dir, 'fb_token')
+            # Get the correct platform-specific directory
+            app_data_dir = get_user_data_dir()
+            token_path = app_data_dir / 'fb_token' # Use pathlib's / operator
+
+            print(f"Attempting to read token from: {token_path}") # Optional: for debugging
+
+            if not token_path.is_file():
+                 # More specific check before trying to open
+                 raise FileNotFoundError(f"Facebook token file not found at expected location: {token_path}")
+
             with open(token_path, 'r') as file:
-                FB_ACCESS_TOKEN = file.read().strip()
-        except FileNotFoundError:
-            raise FileNotFoundError("Facebook token file 'fb_token' not found")
+                token_value = file.read().strip()
+                if not token_value:
+                    # Handle empty token file case
+                    raise ValueError(f"Token file found but is empty: {token_path}")
+                FB_ACCESS_TOKEN = token_value
+
+        except FileNotFoundError as fnf_error:
+            # Re-raise with potentially more context or just the original error
+            print(f"Token file not found: {fnf_error}")
+            raise fnf_error # Re-raise the specific error
+        except IOError as io_error:
+             print(f"Error reading token file: {io_error}")
+             raise Exception(f"Error reading Facebook token file at {token_path}: {io_error}") from io_error
         except Exception as e:
-            raise Exception(f"Error reading Facebook token: {str(e)}")
+            # Catch any other unexpected errors
+            print(f"Unexpected error reading token: {e}")
+            raise Exception(f"Unexpected error reading Facebook token: {e}") from e
+
+    # If FB_ACCESS_TOKEN is still None here after try block, something went wrong
+    if FB_ACCESS_TOKEN is None:
+        raise Exception("Failed to load Facebook token for an unknown reason.")
+
     return FB_ACCESS_TOKEN
 
 def _make_graph_api_call(url: str, params: Dict[str, Any]) -> Dict:
@@ -152,93 +217,121 @@ def refresh_facebook_token(
     scope: str = "email,ads_read,ads_management,public_profile,business_management,catalog_management"
 ) -> Dict:
     """Refresh the Facebook access token using the secure auth server.
-    
-    This tool communicates with the Facebook auth server (fb_host.py) to get a new token.
-    It will open a browser window for the user to authenticate with Facebook.
-    The auth server handles the token exchange securely without exposing the client credentials.
-    
+
+    This tool communicates with the Facebook auth server to get a new token.
+    It saves the token in a platform-specific user data directory.
+
     Args:
         scope: Comma-separated string of permission scopes to request.
-            Default is "email,ads_read,ads_management,public_profile,business_management,catalog_management".
-    
+
     Returns:
         Dict containing status information about the token refresh process.
     """
-    
-    # Reset the cached token
+
     global FB_ACCESS_TOKEN
-    FB_ACCESS_TOKEN = None
-    
-    # Step 1: Generate a unique request ID
+    FB_ACCESS_TOKEN = None # Reset cached token
+
     request_id = str(uuid.uuid4())
-    
-    # Step 2: Define the auth server URLs
     auth_start_url = f"{AUTH_SERVER_BASE_URL}/api/authorise/facebook/start?request_id={request_id}&scope={scope}"
     token_fetch_url = f"{AUTH_SERVER_BASE_URL}/api/authorise/facebook/get-token?request_id={request_id}"
-    
-    # Step 3: Open browser for user to authenticate with Facebook
+
     print(f"Opening browser for Facebook authentication...")
-    webbrowser.open(auth_start_url)
-    
-    # Step 4: Poll the auth server for the token
+    try:
+        webbrowser.open(auth_start_url)
+    except Exception as e:
+         print(f"Warning: Could not open web browser automatically: {e}")
+         print(f"Please manually navigate to: {auth_start_url}")
+
+
     print("Waiting for authentication to complete...")
     max_attempts = 6  # 1 minute (10-second intervals)
     for attempt in range(max_attempts):
         try:
-            # Wait between polls
             time.sleep(10)
-            
-            # Check status with the auth server
-            response = requests.get(token_fetch_url, verify=False)  # Skip SSL verification for self-signed cert
-            
+            # Consider adding timeout to requests.get
+            response = requests.get(token_fetch_url, verify=False, timeout=15) # Skip SSL verification, add timeout
+
             if response.status_code != 200:
-                print(f"Error from auth server: {response.text}")
+                print(f"Error response code {response.status_code} from auth server: {response.text}")
                 continue
-                
+
             data = response.json()
-            
+
             if data["status"] == "pending":
                 print(f"Authentication in progress... ({attempt+1}/{max_attempts})")
                 continue
-                
+
             if data["status"] == "error":
-                return {"status": "error", "message": data.get("message", "Unknown error")}
-                
+                return {"status": "error", "message": data.get("message", "Unknown error from auth server")}
+
             if data["status"] == "success":
-                # We have the token! Save it
                 access_token = data["access_token"]
-                
-                # Save to file
-                current_dir = os.path.dirname(os.path.abspath(__file__))
-                token_path = os.path.join(current_dir, 'fb_token')
-                
-                with open(token_path, 'w') as file:
-                    file.write(access_token)
-                
-                # Update the global token
+
+                # --- MODIFIED SECTION FOR CROSS-PLATFORM SAVE ---
+                try:
+                    # Get the correct platform-specific directory
+                    app_data_dir = get_user_data_dir()
+                    token_path = app_data_dir / 'fb_token' # Use pathlib's / operator
+
+                    print(f"Saving token to: {token_path}")
+                    with open(token_path, 'w') as file:
+                        file.write(access_token)
+
+                except IOError as e:
+                    print(f"ERROR: Could not write token file to {token_path}: {e}")
+                    return {
+                        "status": "error",
+                        "message": f"Failed to save token file: {e}"
+                    }
+                except Exception as e: # Catch other potential errors during path handling/writing
+                    print(f"ERROR: Unexpected error saving token: {e}")
+                    return {
+                        "status": "error",
+                        "message": f"Unexpected error saving token file: {e}"
+                    }
+                # --- END MODIFIED SECTION ---
+
                 FB_ACCESS_TOKEN = access_token
-                
-                # Verify the token works
-                verify_url = f"{FB_GRAPH_URL}/me"
-                verify_params = {'access_token': access_token}
-                verify_response = requests.get(verify_url, params=verify_params)
-                verify_response.raise_for_status()
-                user_data = verify_response.json()
-                
-                return {
-                    "status": "success",
-                    "message": f"Access token successfully refreshed and saved for user {user_data.get('name', 'Unknown')}",
-                    "expires_in": data.get("expires_in", "unknown"),
-                    "user_id": user_data.get("id")
-                }
-                
+
+                # Verify the token works (optional but good)
+                try:
+                    verify_url = f"{FB_GRAPH_URL}/me"
+                    verify_params = {'access_token': access_token} # Request specific fields
+                    verify_response = requests.get(verify_url, params=verify_params)
+                    verify_response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+                    user_data = verify_response.json()
+
+                    return {
+                        "status": "success",
+                        "message": f"Access token successfully refreshed and saved for user {user_data.get('name', 'Unknown')}",
+                        "expires_in": data.get("expires_in", "unknown"),
+                        "user_id": user_data.get("id")
+                    }
+                except requests.exceptions.RequestException as e:
+                     print(f"Error verifying token with Facebook API: {e}")
+                     # Token saved, but verification failed. Return success but maybe add a warning?
+                     return {
+                        "status": "success_verification_failed",
+                        "message": f"Token saved, but verification failed: {e}",
+                        "expires_in": data.get("expires_in", "unknown"),
+                    }
+
+
+        except requests.exceptions.Timeout:
+            print(f"Timeout connecting to auth server ({token_fetch_url}). Retrying...")
+        except requests.exceptions.RequestException as e:
+            print(f"Network error polling for token: {str(e)}. Retrying...")
         except Exception as e:
-            print(f"Error polling for token: {str(e)}")
-    
+            # Catch unexpected errors during polling loop
+            print(f"Unexpected error during token poll: {str(e)}")
+
+
     return {
         "status": "error",
-        "message": f"Timeout: Authentication did not complete within {max_attempts*10} seconds"
+        "message": f"Timeout or maximum attempts reached: Authentication did not complete successfully within {max_attempts*10} seconds"
     }
+
+
 
 
 @mcp.tool()
@@ -2095,6 +2188,130 @@ def get_campaigns_by_adaccount(
     
     return _make_graph_api_call(url, params)
 
+# --- Activity Tools ---
+
+@mcp.tool()
+def get_activities_by_adaccount(
+    act_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    time_range: Optional[Dict[str, str]] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None
+) -> Dict:
+    """Retrieves activities for a Facebook ad account.
+    
+    This function accesses the Facebook Graph API to retrieve information about 
+    key updates to an ad account and ad objects associated with it. By default, 
+    this API returns one week's data. Information returned includes major account 
+    status changes, updates made to budget, campaign, targeting, audiences and more.
+    
+    Args:
+        act_id (str): The ID of the ad account, prefixed with 'act_', e.g., 'act_1234567890'.
+        fields (Optional[List[str]]): A list of specific fields to retrieve. If None,
+            all available fields will be returned. Available fields include:
+            - 'actor_id': ID of the user who made the change
+            - 'actor_name': Name of the user who made the change
+            - 'application_id': ID of the application used to make the change
+            - 'application_name': Name of the application used to make the change
+            - 'changed_data': Details about what was changed in JSON format
+            - 'date_time_in_timezone': The timestamp in the account's timezone
+            - 'event_time': The timestamp of when the event occurred
+            - 'event_type': The specific type of change that was made (numeric code)
+            - 'extra_data': Additional data related to the change in JSON format
+            - 'object_id': ID of the object that was changed (ad, campaign, etc.)
+            - 'object_name': Name of the object that was changed
+            - 'object_type': Type of object being modified, values include:
+              'AD', 'ADSET', 'CAMPAIGN', 'ACCOUNT', 'IMAGE', 'REPORT', etc.
+            - 'translated_event_type': Human-readable description of the change made,
+              examples include: 'ad created', 'campaign budget updated', 
+              'targeting updated', 'ad status changed', etc.
+        limit (Optional[int]): Maximum number of activities to return per page.
+            Default behavior returns a server-determined number of results.
+        after (Optional[str]): Pagination cursor for the next page of results.
+            Obtained from the 'paging.cursors.after' field in the previous response.
+        before (Optional[str]): Pagination cursor for the previous page of results.
+            Obtained from the 'paging.cursors.before' field in the previous response.
+        time_range (Optional[Dict[str, str]]): A custom time range with 'since' and 'until'
+            dates in 'YYYY-MM-DD' format. Example: {'since': '2023-01-01', 'until': '2023-01-31'}
+            This parameter overrides the since/until parameters if both are provided.
+        since (Optional[str]): Start date in YYYY-MM-DD format. Defines the beginning 
+            of the time range for returned activities. Ignored if 'time_range' is provided.
+        until (Optional[str]): End date in YYYY-MM-DD format. Defines the end 
+            of the time range for returned activities. Ignored if 'time_range' is provided.
+    
+    Returns:
+        Dict: A dictionary containing the requested activities. The main results are in the 'data'
+              list, and pagination info is in the 'paging' object. Each activity object contains
+              information about who made the change, what was changed, when it occurred, and
+              the specific details of the change.
+    
+    Example:
+        ```python
+        # Get recent activities for an ad account with default one week of data
+        activities = get_activities_by_adaccount(
+            act_id="act_123456789",
+            fields=["event_time", "actor_name", "object_type", "translated_event_type"]
+        )
+        
+        # Get all activities from a specific date range
+        dated_activities = get_activities_by_adaccount(
+            act_id="act_123456789",
+            time_range={"since": "2023-01-01", "until": "2023-01-31"},
+            fields=["event_time", "actor_name", "object_type", "translated_event_type", "extra_data"]
+        )
+        
+        # Paginate through activity results
+        paginated_activities = get_activities_by_adaccount(
+            act_id="act_123456789",
+            limit=50,
+            fields=["event_time", "actor_name", "object_type", "translated_event_type"]
+        )
+        
+        # Get the next page using the cursor from the previous response
+        next_page_cursor = paginated_activities.get("paging", {}).get("cursors", {}).get("after")
+        if next_page_cursor:
+            next_page = get_activities_by_adaccount(
+                act_id="act_123456789",
+                fields=["event_time", "actor_name", "object_type", "translated_event_type"],
+                after=next_page_cursor
+            )
+        ```
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{act_id}/activities"
+    params = {
+        'access_token': access_token
+    }
+    
+    if fields:
+        params['fields'] = ','.join(fields)
+    
+    if limit is not None:
+        params['limit'] = limit
+    
+    if after:
+        params['after'] = after
+    
+    if before:
+        params['before'] = before
+    
+    # time_range takes precedence over since/until
+    if time_range:
+        params['time_range'] = json.dumps(time_range)
+    else:
+        if since:
+            params['since'] = since
+        if until:
+            params['until'] = until
+    
+    return _make_graph_api_call(url, params)
+
+
+
+
 if __name__ == "__main__":
-    mcp.run(transport='stdio')
-    # print(refresh_facebook_token(scope="ads_read"))
+    # mcp.run(transport='stdio')
+    print(refresh_facebook_token(scope="ads_read"))
