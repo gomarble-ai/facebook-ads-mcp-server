@@ -97,3 +97,4 @@ This MCP server provides tools for interacting with Facebook Ads objects and dat
 *   [requests](https://pypi.org/project/requests/) (>=2.32.3)
 
 ## License
+This project is licensed under the MIT License.
