@@ -2312,6 +2312,115 @@ def get_activities_by_adaccount(
 
 
 
+@mcp.tool()
+def get_activities_by_adset(
+    adset_id: str,
+    fields: Optional[List[str]] = None,
+    limit: Optional[int] = None,
+    after: Optional[str] = None,
+    before: Optional[str] = None,
+    time_range: Optional[Dict[str, str]] = None,
+    since: Optional[str] = None,
+    until: Optional[str] = None
+) -> Dict:
+    """Retrieves activities for a Facebook ad set.
+    
+    This function accesses the Facebook Graph API to retrieve information about 
+    key updates to an ad set. By default, this API returns one week's data. 
+    Information returned includes status changes, budget updates, targeting changes, and more.
+    
+    Args:
+        adset_id (str): The ID of the ad set, e.g., '123456789'.
+        fields (Optional[List[str]]): A list of specific fields to retrieve. If None,
+            all available fields will be returned. Available fields include:
+            - 'actor_id': ID of the user who made the change
+            - 'actor_name': Name of the user who made the change
+            - 'application_id': ID of the application used to make the change
+            - 'application_name': Name of the application used to make the change
+            - 'changed_data': Details about what was changed in JSON format
+            - 'date_time_in_timezone': The timestamp in the account's timezone
+            - 'event_time': The timestamp of when the event occurred
+            - 'event_type': The specific type of change that was made (numeric code)
+            - 'extra_data': Additional data related to the change in JSON format
+            - 'object_id': ID of the object that was changed
+            - 'object_name': Name of the object that was changed
+            - 'object_type': Type of object being modified
+            - 'translated_event_type': Human-readable description of the change made,
+              examples include: 'adset created', 'adset budget updated', 
+              'targeting updated', 'adset status changed', etc.
+        limit (Optional[int]): Maximum number of activities to return per page.
+            Default behavior returns a server-determined number of results.
+        after (Optional[str]): Pagination cursor for the next page of results.
+            Obtained from the 'paging.cursors.after' field in the previous response.
+        before (Optional[str]): Pagination cursor for the previous page of results.
+            Obtained from the 'paging.cursors.before' field in the previous response.
+        time_range (Optional[Dict[str, str]]): A custom time range with 'since' and 'until'
+            dates in 'YYYY-MM-DD' format. Example: {'since': '2023-01-01', 'until': '2023-01-31'}
+            This parameter overrides the since/until parameters if both are provided.
+        since (Optional[str]): Start date in YYYY-MM-DD format. Defines the beginning 
+            of the time range for returned activities. Ignored if 'time_range' is provided.
+        until (Optional[str]): End date in YYYY-MM-DD format. Defines the end 
+            of the time range for returned activities. Ignored if 'time_range' is provided.
+    
+    Returns:
+        Dict: A dictionary containing the requested activities. The main results are in the 'data'
+              list, and pagination info is in the 'paging' object. Each activity object contains
+              information about who made the change, what was changed, when it occurred, and
+              the specific details of the change.
+    
+    Example:
+        ```python
+        # Get recent activities for an ad set with default one week of data
+        activities = get_activities_by_adset(
+            adset_id="123456789",
+            fields=["event_time", "actor_name", "translated_event_type"]
+        )
+        
+        # Get all activities from a specific date range
+        dated_activities = get_activities_by_adset(
+            adset_id="123456789",
+            time_range={"since": "2023-01-01", "until": "2023-01-31"},
+            fields=["event_time", "actor_name", "translated_event_type", "extra_data"]
+        )
+        
+        # Paginate through activity results
+        paginated_activities = get_activities_by_adset(
+            adset_id="123456789",
+            limit=50,
+            fields=["event_time", "actor_name", "translated_event_type"]
+        )
+        ```
+    """
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{adset_id}/activities"
+    params = {
+        'access_token': access_token
+    }
+    
+    if fields:
+        params['fields'] = ','.join(fields)
+    
+    if limit is not None:
+        params['limit'] = limit
+    
+    if after:
+        params['after'] = after
+    
+    if before:
+        params['before'] = before
+    
+    # time_range takes precedence over since/until
+    if time_range:
+        params['time_range'] = json.dumps(time_range)
+    else:
+        if since:
+            params['since'] = since
+        if until:
+            params['until'] = until
+    
+    return _make_graph_api_call(url, params)
+
+
 if __name__ == "__main__":
     mcp.run(transport='stdio')
     # print(refresh_facebook_token(scope="ads_read"))
