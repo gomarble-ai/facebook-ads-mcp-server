@@ -1,3 +1,2 @@
 mcp>=1.6.0
 requests>=2.32.3
-platformdirs>=4.3.7

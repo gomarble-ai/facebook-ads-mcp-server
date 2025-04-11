@@ -3,21 +3,14 @@ from mcp.server.fastmcp import FastMCP
 import requests
 from typing import Dict, List, Optional, Any
 import json
-import os
-import webbrowser
-import time
-import uuid
 import requests
-import os
-from pathlib import Path
-from typing import Optional # Using Optional for type hinting
-import platformdirs
+import sys
+
     
 
 # --- Constants ---
 FB_API_VERSION = "v22.0"
 FB_GRAPH_URL = f"https://graph.facebook.com/{FB_API_VERSION}"
-AUTH_SERVER_BASE_URL = "https://reimagine.gomarble.ai"
 DEFAULT_AD_ACCOUNT_FIELDS = [
     'name', 'business_name', 'age', 'account_status', 'balance',
     'amount_spent', 'attribution_spec', 'account_id', 'business',
@@ -33,87 +26,99 @@ FB_ACCESS_TOKEN = None
 
 # --- Helper Functions ---
 
-
-# --- Cross-platform directory handling ---
-# Make sure these are defined in the same scope or imported
-
-APP_NAME = "FbApiMcpServer"
-APP_AUTHOR = "Gomarble" # Needs to be the same as used in refresh_... function
-
-def get_user_data_dir() -> Path:
-    """
-    Gets the platform-specific user data directory using platformdirs
-    and ensures it exists.
-
-    Returns:
-        Path: The Path object representing the user data directory.
-    """
-    data_dir = Path(platformdirs.user_data_dir(appname=APP_NAME, appauthor=APP_AUTHOR))
-    # Ensure it exists only needed if writing, reading can just fail if missing.
-    # If you want to guarantee the dir exists even before first write:
-    data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir
-# --- End cross-platform directory handling ---
-
-
-# Global variable holding the cached token
-FB_ACCESS_TOKEN: Optional[str] = None
-
 def _get_fb_access_token() -> str:
     """
-    Get Facebook access token, reading from the platform-specific
-    user data directory. Caches the token in memory after first read.
+    Get Facebook access token from command line arguments.
+    Caches the token in memory after first read.
 
     Returns:
         str: The Facebook access token.
 
     Raises:
-        FileNotFoundError: If the token file cannot be found.
-        Exception: If there is an error reading the token file.
+        Exception: If no token is provided in command line arguments.
     """
     global FB_ACCESS_TOKEN
     if FB_ACCESS_TOKEN is None:
-        try:
-            # Get the correct platform-specific directory
-            app_data_dir = get_user_data_dir()
-            token_path = app_data_dir / 'fb_token' # Use pathlib's / operator
-
-            print(f"Attempting to read token from: {token_path}") # Optional: for debugging
-
-            if not token_path.is_file():
-                 # More specific check before trying to open
-                 raise FileNotFoundError(f"Facebook token file not found at expected location: {token_path}")
-
-            with open(token_path, 'r') as file:
-                token_value = file.read().strip()
-                if not token_value:
-                    # Handle empty token file case
-                    raise ValueError(f"Token file found but is empty: {token_path}")
-                FB_ACCESS_TOKEN = token_value
-
-        except FileNotFoundError as fnf_error:
-            # Re-raise with potentially more context or just the original error
-            print(f"Token file not found: {fnf_error}")
-            raise fnf_error # Re-raise the specific error
-        except IOError as io_error:
-             print(f"Error reading token file: {io_error}")
-             raise Exception(f"Error reading Facebook token file at {token_path}: {io_error}") from io_error
-        except Exception as e:
-            # Catch any other unexpected errors
-            print(f"Unexpected error reading token: {e}")
-            raise Exception(f"Unexpected error reading Facebook token: {e}") from e
-
-    # If FB_ACCESS_TOKEN is still None here after try block, something went wrong
-    if FB_ACCESS_TOKEN is None:
-        raise Exception("Failed to load Facebook token for an unknown reason.")
+        # Look for --fb-token argument
+        if "--fb-token" in sys.argv:
+            token_index = sys.argv.index("--fb-token") + 1
+            if token_index < len(sys.argv):
+                FB_ACCESS_TOKEN = sys.argv[token_index]
+                print(f"Using Facebook token from command line arguments")
+            else:
+                raise Exception("--fb-token argument provided but no token value followed it")
+        else:
+            raise Exception("Facebook token must be provided via '--fb-token' command line argument")
 
     return FB_ACCESS_TOKEN
 
 def _make_graph_api_call(url: str, params: Dict[str, Any]) -> Dict:
     """Makes a GET request to the Facebook Graph API and handles the response."""
-    response = requests.get(url, params=params)
-    response.raise_for_status()
-    return response.json()
+    try:
+        response = requests.get(url, params=params)
+        response.raise_for_status()  # Raises HTTPError for bad responses (4xx or 5xx)
+        return response.json()
+    except requests.exceptions.RequestException as e:
+        # Log the error and re-raise or handle more gracefully
+        print(f"Error making Graph API call to {url} with params {params}: {e}")
+        # Depending on desired behavior, you might want to raise a custom exception
+        # or return a specific error structure. Re-raising keeps the current behavior.
+        raise
+
+
+def _prepare_params(base_params: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+    """Adds optional parameters to a dictionary if they are not None. Handles JSON encoding."""
+    params = base_params.copy()
+    for key, value in kwargs.items():
+        if value is not None:
+            # Parameters that need JSON encoding
+            if key in ['filtering', 'time_range', 'time_ranges', 'effective_status', 
+                       'special_ad_categories', 'objective', 
+                       'buyer_guarantee_agreement_status'] and isinstance(value, (list, dict)):
+                params[key] = json.dumps(value)
+            elif key == 'fields' and isinstance(value, list):
+                 params[key] = ','.join(value)
+            elif key == 'action_attribution_windows' and isinstance(value, list):
+                 params[key] = ','.join(value)
+            elif key == 'action_breakdowns' and isinstance(value, list):
+                 params[key] = ','.join(value)
+            elif key == 'breakdowns' and isinstance(value, list):
+                 params[key] = ','.join(value)
+            else:
+                params[key] = value
+    return params
+
+
+def _fetch_node(node_id: str, **kwargs) -> Dict:
+    """Helper to fetch a single object (node) by its ID."""
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{node_id}"
+    params = _prepare_params({'access_token': access_token}, **kwargs)
+    return _make_graph_api_call(url, params)
+
+def _fetch_edge(parent_id: str, edge_name: str, **kwargs) -> Dict:
+    """Helper to fetch a collection (edge) related to a parent object."""
+    access_token = _get_fb_access_token()
+    url = f"{FB_GRAPH_URL}/{parent_id}/{edge_name}"
+    
+    # Handle time parameters specifically for activities edge if needed
+    time_params = {}
+    if edge_name == 'activities':
+        time_range = kwargs.pop('time_range', None)
+        since = kwargs.pop('since', None)
+        until = kwargs.pop('until', None)
+        if time_range:
+            time_params['time_range'] = time_range
+        else:
+            if since: time_params['since'] = since
+            if until: time_params['until'] = until
+            
+    base_params = {'access_token': access_token}
+    params = _prepare_params(base_params, **kwargs)
+    params.update(_prepare_params({}, **time_params)) # Add specific time params
+
+    return _make_graph_api_call(url, params)
+
 
 def _build_insights_params(
     params: Dict[str, Any],
@@ -141,10 +146,26 @@ def _build_insights_params(
     locale: Optional[str] = None
 ) -> Dict[str, Any]:
     """Builds the common parameter dictionary for insights API calls."""
-    if fields:
-        params['fields'] = ','.join(fields)
     
-    # Time parameters
+    # Use the generic parameter builder first
+    params = _prepare_params(
+        params,
+        fields=fields,
+        level=level,
+        action_attribution_windows=action_attribution_windows,
+        action_breakdowns=action_breakdowns,
+        action_report_time=action_report_time,
+        breakdowns=breakdowns,
+        filtering=filtering,
+        sort=sort,
+        limit=limit,
+        after=after,
+        before=before,
+        offset=offset,
+        locale=locale
+    )
+
+    # Handle time parameters (specific logic for insights)
     time_params_provided = time_range or time_ranges or since or until
     if not time_params_provided and date_preset:
         params['date_preset'] = date_preset
@@ -152,8 +173,9 @@ def _build_insights_params(
         params['time_range'] = json.dumps(time_range)
     if time_ranges:
         params['time_ranges'] = json.dumps(time_ranges)
-    if time_increment and time_increment != 'all_days':
+    if time_increment and time_increment != 'all_days': # API default is all_days
         params['time_increment'] = time_increment
+        
     # Time-based pagination (only if specific time range isn't set)
     if not time_range and not time_ranges:
         if since:
@@ -161,22 +183,7 @@ def _build_insights_params(
         if until:
             params['until'] = until
 
-    if level:
-        params['level'] = level
-
-    # Action parameters
-    if action_attribution_windows:
-        params['action_attribution_windows'] = ','.join(action_attribution_windows)
-    if action_breakdowns:
-        params['action_breakdowns'] = ','.join(action_breakdowns)
-    if action_report_time:
-        params['action_report_time'] = action_report_time
-    
-    # Breakdown parameters
-    if breakdowns:
-        params['breakdowns'] = ','.join(breakdowns)
-    
-    # Summary and attribution settings
+    # Boolean flags need specific handling ('true'/'false' strings)
     if default_summary:
         params['default_summary'] = 'true'
     if use_account_attribution_setting:
@@ -184,164 +191,21 @@ def _build_insights_params(
     # Only add unified if True (it defaults to False in API if omitted)
     if use_unified_attribution_setting:
         params['use_unified_attribution_setting'] = 'true'
-    
-    # Filtering, Sorting, Limit
-    if filtering:
-        # Ensure filtering is passed as a JSON string if it's complex
-        params['filtering'] = json.dumps(filtering) if isinstance(filtering, (list, dict)) else filtering
-    if sort:
-        params['sort'] = sort
-    if limit is not None: # Check for None explicitly as limit can be 0
-        params['limit'] = limit
-        
-    # Pagination parameters
-    if after:
-        params['after'] = after
-    if before:
-        params['before'] = before
-    if offset is not None:
-        params['offset'] = offset
-        
-    # Add locale if provided
-    if locale:
-        params['locale'] = locale
-        
+
     return params
 
 
 
 # --- MCP Tools ---
-
-@mcp.tool()
-def refresh_facebook_token(
-    scope: str = "email,ads_read,ads_management,public_profile,business_management,catalog_management"
-) -> Dict:
-    """Refresh the Facebook access token using the secure auth server.
-
-    This tool communicates with the Facebook auth server to get a new token.
-    It saves the token in a platform-specific user data directory.
-
-    Args:
-        scope: Comma-separated string of permission scopes to request.
-
-    Returns:
-        Dict containing status information about the token refresh process.
-    """
-
-    global FB_ACCESS_TOKEN
-    FB_ACCESS_TOKEN = None # Reset cached token
-
-    request_id = str(uuid.uuid4())
-    auth_start_url = f"{AUTH_SERVER_BASE_URL}/api/authorise/facebook/start?request_id={request_id}&scope={scope}"
-    token_fetch_url = f"{AUTH_SERVER_BASE_URL}/api/authorise/facebook/get-token?request_id={request_id}"
-
-    print(f"Opening browser for Facebook authentication...")
-    try:
-        webbrowser.open(auth_start_url)
-    except Exception as e:
-         print(f"Warning: Could not open web browser automatically: {e}")
-         print(f"Please manually navigate to: {auth_start_url}")
-
-
-    print("Waiting for authentication to complete...")
-    max_attempts = 6  # 1 minute (10-second intervals)
-    for attempt in range(max_attempts):
-        try:
-            time.sleep(10)
-            # Consider adding timeout to requests.get
-            response = requests.get(token_fetch_url, verify=False, timeout=15) # Skip SSL verification, add timeout
-
-            if response.status_code != 200:
-                print(f"Error response code {response.status_code} from auth server: {response.text}")
-                continue
-
-            data = response.json()
-
-            if data["status"] == "pending":
-                print(f"Authentication in progress... ({attempt+1}/{max_attempts})")
-                continue
-
-            if data["status"] == "error":
-                return {"status": "error", "message": data.get("message", "Unknown error from auth server")}
-
-            if data["status"] == "success":
-                access_token = data["access_token"]
-
-                # --- MODIFIED SECTION FOR CROSS-PLATFORM SAVE ---
-                try:
-                    # Get the correct platform-specific directory
-                    app_data_dir = get_user_data_dir()
-                    token_path = app_data_dir / 'fb_token' # Use pathlib's / operator
-
-                    print(f"Saving token to: {token_path}")
-                    with open(token_path, 'w') as file:
-                        file.write(access_token)
-
-                except IOError as e:
-                    print(f"ERROR: Could not write token file to {token_path}: {e}")
-                    return {
-                        "status": "error",
-                        "message": f"Failed to save token file: {e}"
-                    }
-                except Exception as e: # Catch other potential errors during path handling/writing
-                    print(f"ERROR: Unexpected error saving token: {e}")
-                    return {
-                        "status": "error",
-                        "message": f"Unexpected error saving token file: {e}"
-                    }
-                # --- END MODIFIED SECTION ---
-
-                FB_ACCESS_TOKEN = access_token
-
-                # Verify the token works (optional but good)
-                try:
-                    verify_url = f"{FB_GRAPH_URL}/me"
-                    verify_params = {'access_token': access_token} # Request specific fields
-                    verify_response = requests.get(verify_url, params=verify_params)
-                    verify_response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-                    user_data = verify_response.json()
-
-                    return {
-                        "status": "success",
-                        "message": f"Access token successfully refreshed and saved for user {user_data.get('name', 'Unknown')}",
-                        "expires_in": data.get("expires_in", "unknown"),
-                        "user_id": user_data.get("id")
-                    }
-                except requests.exceptions.RequestException as e:
-                     print(f"Error verifying token with Facebook API: {e}")
-                     # Token saved, but verification failed. Return success but maybe add a warning?
-                     return {
-                        "status": "success_verification_failed",
-                        "message": f"Token saved, but verification failed: {e}",
-                        "expires_in": data.get("expires_in", "unknown"),
-                    }
-
-
-        except requests.exceptions.Timeout:
-            print(f"Timeout connecting to auth server ({token_fetch_url}). Retrying...")
-        except requests.exceptions.RequestException as e:
-            print(f"Network error polling for token: {str(e)}. Retrying...")
-        except Exception as e:
-            # Catch unexpected errors during polling loop
-            print(f"Unexpected error during token poll: {str(e)}")
-
-
-    return {
-        "status": "error",
-        "message": f"Timeout or maximum attempts reached: Authentication did not complete successfully within {max_attempts*10} seconds"
-    }
-
-
-
-
 @mcp.tool()
 def list_ad_accounts() -> Dict:
     """List down the ad accounts and their names associated with your Facebook account"""
+    # This uses a specific endpoint structure not fitting _fetch_node/_fetch_edge easily
     access_token = _get_fb_access_token()
     url = f"{FB_GRAPH_URL}/me"
     params = {
         'access_token': access_token,
-        'fields': 'adaccounts{name}'
+        'fields': 'adaccounts{name}' # Specific field structure
     }
     return _make_graph_api_call(url, params)
 
@@ -359,16 +223,8 @@ def get_details_of_ad_account(act_id: str, fields: list[str] = None) -> Dict:
     Returns:    
         A dictionary containing the details of the ad account
     """
-    if fields is None:
-        fields = DEFAULT_AD_ACCOUNT_FIELDS
-    
-    access_token = _get_fb_access_token()
-    url = f"{FB_GRAPH_URL}/{act_id}"
-    params = {
-        'access_token': access_token,
-        'fields': ','.join(fields)
-    }
-    return _make_graph_api_call(url, params)
+    effective_fields = fields if fields is not None else DEFAULT_AD_ACCOUNT_FIELDS
+    return _fetch_node(node_id=act_id, fields=effective_fields)
 
 
 # --- Insigbts API Tools ---
@@ -2422,5 +2278,6 @@ def get_activities_by_adset(
 
 
 if __name__ == "__main__":
+    _get_fb_access_token()
     mcp.run(transport='stdio')
-    # print(refresh_facebook_token(scope="ads_read"))
+    
