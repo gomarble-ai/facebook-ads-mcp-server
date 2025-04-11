@@ -1,6 +1,6 @@
-# Facebook API MCP Server
+# Facebook Ads MCP Server
 
-This project provides an MCP (Marble Control Plane) server acting as an interface to the Facebook Graph API, enabling programmatic access to Facebook Ads data and management features.
+This project provides an MCP (Marble Control Plane) server acting as an interface to the Facebook Ads, enabling programmatic access to Facebook Ads data and management features.
 
 ## Prerequisites
 
@@ -37,17 +37,17 @@ To integrate this server with an MCP-compatible client, add a configuration simi
 ```json
 {
   "mcpServers": {
-    "fb-api-mcp-server": {
+    "fb-ads-mcp-server": {
       "command": "python",
       "args": [
-        "/path/to/your/fb-api-mcp-server/server.py",
+        "/path/to/your/fb-ads-mcp-server/server.py",
         "--fb-token",
         "YOUR_FACEBOOK_ACCESS_TOKEN"
       ]
       // If using a virtual environment, you might need to specify the python executable within the venv:
-      // "command": "/path/to/your/fb-api-mcp-server/venv/bin/python",
+      // "command": "/path/to/your/fb-ads-mcp-server/venv/bin/python",
       // "args": [
-      //   "/path/to/your/fb-api-mcp-server/server.py",
+      //   "/path/to/your/fb-ads-mcp-server/server.py",
       //   "--fb-token",
       //   "YOUR_FACEBOOK_ACCESS_TOKEN"
       // ]
