@@ -20,7 +20,7 @@ This project provides an MCP (Marble Control Plane) server acting as an interfac
     ```bash
     pip install -r requirements.txt
     ```
-3.  **Obtain Facebook Access Token:** Secure a Facebook User Access Token with the necessary permissions (e.g., `ads_read`). You can generate this through the Facebook Developer portal. Follow [[this link]](https://elfsight.com/blog/how-to-get-facebook-access-token/).
+3.  **Obtain Facebook Access Token:** Secure a Facebook User Access Token with the necessary permissions (e.g., `ads_read`). You can generate this through the Facebook Developer portal. Follow [this link](https://elfsight.com/blog/how-to-get-facebook-access-token/).
 
 ## Running the Server
 
