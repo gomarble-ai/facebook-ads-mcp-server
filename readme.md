@@ -1,13 +1,3 @@
-<p align="center">
-  <a href="https://gomarble.ai/">
-    <img src="https://framerusercontent.com/images/SnNviDyz2G0e1zGQOhi21D8dyI.png" alt="GoMarble Logo" width="200"> 
-  </a>
-  &nbsp;&nbsp;
-  <a href="">
-    <img src="https://www.linkedin.com/company/go-marble/" alt="Connect on LinkedIn">
-  </a>
-</p>
-
 # Facebook API MCP Server
 
 This project provides an MCP (Marble Control Plane) server acting as an interface to the Facebook Graph API, enabling programmatic access to Facebook Ads data and management features.
@@ -107,5 +97,3 @@ This MCP server provides tools for interacting with Facebook Ads objects and dat
 *   [requests](https://pypi.org/project/requests/) (>=2.32.3)
 
 ## License
-
-[Specify License Here - e.g., MIT, Apache 2.0, etc.]
