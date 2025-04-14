@@ -22,17 +22,9 @@ This project provides an MCP (Marble Control Plane) server acting as an interfac
     ```
 3.  **Obtain Facebook Access Token:** Secure a Facebook User Access Token with the necessary permissions (e.g., `ads_read`). You can generate this through the Facebook Developer portal. Follow [this link](https://elfsight.com/blog/how-to-get-facebook-access-token/).
 
-## Running the Server
-
-Execute `server.py`, providing the access token via the `--fb-token` argument. The server will start and listen for MCP JSON-RPC requests via standard input and send responses via standard output.
-
-```bash
-python server.py --fb-token YOUR_FACEBOOK_ACCESS_TOKEN
-```
-
 ## Usage with MCP Clients (e.g., Cursor, Claude Desktop)
 
-To integrate this server with an MCP-compatible client, add a configuration similar to the following. Replace `YOUR_FACEBOOK_ACCESS_TOKEN` with your actual token and adjust the path to `server.py` if necessary.
+To integrate this server with an MCP-compatible client, add a configuration([Claude](https://modelcontextprotocol.io/quickstart/user#2-add-the-filesystem-mcp-server)) similar to the following. Replace `YOUR_FACEBOOK_ACCESS_TOKEN` with your actual token and adjust the path to `server.py` if necessary.
 
 ```json
 {
@@ -55,7 +47,17 @@ To integrate this server with an MCP-compatible client, add a configuration simi
   }
 }
 ```
+Restart the MCP Client app after making the update in the configuration.
+
 *(Note: On Windows, you might need to adjust the command structure or use `cmd /k` depending on your setup.)*
+
+## Debugging the Server
+
+Execute `server.py`, providing the access token via the `--fb-token` argument.
+
+```bash
+python server.py --fb-token YOUR_FACEBOOK_ACCESS_TOKEN
+```
 
 ## Available MCP Tools
 
@@ -90,6 +92,8 @@ This MCP server provides tools for interacting with Facebook Ads objects and dat
 | `get_activities_by_adset`       | Retrieves change history for an ad set.                  |
 
 *(Note: Most tools support additional parameters like `fields`, `filtering`, `limit`, pagination, date ranges, etc. Refer to the detailed docstrings within `server.py` for the full list and description of arguments for each tool.)*
+
+*(Note: If your Facebook access token expires, you'll need to generate a new one and update the configuration file of the MCP Client with new token to continue using the tools.)*
 
 ## Dependencies
 
