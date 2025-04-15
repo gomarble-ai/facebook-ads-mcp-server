@@ -108,8 +108,7 @@ This project is licensed under the MIT License.
 ## Easy One-Click Setup (Windows Only)
 
 For a simpler setup experience, we offer a ready-to-use Windows installer:
-https://raw.githubusercontent.com/gomarble-ai/facebook-ads-mcp-server/main/installer/win/gomarble_mcp_tools.exe
-👉 **[Download gomarble_mcp_tools.exe](https://raw.githubusercontent.com/gomarble-ai/facebook-ads-mcp-server/main/installer/win/gomarble_mcp_tools.exe)**
+👉 **[Download gomarble_mcp_tools.exe for Windows](https://raw.githubusercontent.com/gomarble-ai/facebook-ads-mcp-server/main/installer/win/gomarble_mcp_tools.exe)**
 
 ### What It Does
 
