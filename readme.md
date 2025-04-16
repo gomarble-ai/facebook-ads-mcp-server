@@ -4,7 +4,7 @@
 
 This project provides an MCP server acting as an interface to the Facebook Ads, enabling programmatic access to Facebook Ads data and management features.
 
-<video controls width="1920" height="512" src="https://raw.githubusercontent.com/gomarble-ai/facebook-ads-mcp-server/main/assets/claude_demo.mp4">Your browser does not support the video tag.</video>
+<video controls width="1920" height="512" src="https://github.com/user-attachments/assets/c4a76dcf-cf5d-4a1d-b976-08165e880fe4">Your browser does not support the video tag.</video>
 
 ## Easy One-Click Setup
 
