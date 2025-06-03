@@ -33,59 +33,61 @@ GoMarble **does not store** your token — it is saved locally on your machine f
 
 ### Prerequisites
 
-*   Python 3.10+
-*   Dependencies listed in `requirements.txt`
+*   Node.js v16+ (automatically installed by the installers if not present)
+*   Dependencies will be installed automatically by the installer
 
-
-
-1.  **(Optional but Recommended) Create and Activate a Virtual Environment:**
+1.  **Install Dependencies (if setting up manually):**
     ```bash
-    python3 -m venv venv
-    source venv/bin/activate  # On Windows use `venv\Scripts\activate`
+    npm install auth-mcp-tools
     ```
 
-    Using a virtual environment helps manage project dependencies cleanly[[Source]](https://docs.python.org/3/tutorial/venv.html).
-2.  **Install Dependencies:**
-    ```bash
-    pip install -r requirements.txt
-    ```
-3.  **Obtain Facebook Access Token:** Secure a Facebook User Access Token with the necessary permissions (e.g., `ads_read`). You can generate this through the Facebook Developer portal. Follow [this link](https://elfsight.com/blog/how-to-get-facebook-access-token/).
+2.  **Obtain API Key:** The installer will automatically obtain an API key during setup, or you can obtain one from the GoMarble platform.
 
 ### Usage with MCP Clients (e.g., Cursor, Claude Desktop)
 
-To integrate this server with an MCP-compatible client, add a configuration([Claude](https://modelcontextprotocol.io/quickstart/user#2-add-the-filesystem-mcp-server)) similar to the following. Replace `YOUR_FACEBOOK_ACCESS_TOKEN` with your actual token and adjust the path to `server.py` if necessary.
+The installer automatically configures Claude Desktop with the appropriate MCP servers. If you need to manually configure it, add the following to your Claude Desktop configuration file (typically at `$APPDATA/Claude/claude_desktop_config.json`):
 
 ```json
 {
   "mcpServers": {
-    "fb-ads-mcp-server": {
-      "command": "python",
+    "auth-mcp-tools": {
+      "command": "node",
       "args": [
-        "/path/to/your/fb-ads-mcp-server/server.py",
-        "--fb-token",
-        "YOUR_FACEBOOK_ACCESS_TOKEN"
+        "/path/to/your/install/directory/build/index.js"
       ]
-      // If using a virtual environment, you might need to specify the python executable within the venv:
-      // "command": "/path/to/your/fb-ads-mcp-server/venv/bin/python",
-      // "args": [
-      //   "/path/to/your/fb-ads-mcp-server/server.py",
-      //   "--fb-token",
-      //   "YOUR_FACEBOOK_ACCESS_TOKEN"
-      // ]
+    },
+    "ads-mcp-server": {
+      "command": "npx",
+      "args": [
+        "mcp-remote",
+        "https://mcp.gomarble.ai/sse",
+        "--header",
+        "Authorization: ${AUTH_HEADER}"
+      ],
+      "env": {
+        "AUTH_HEADER": "Bearer YOUR_API_KEY"
+      }
     }
   }
 }
 ```
-Restart the MCP Client app after making the update in the configuration.
 
-*(Note: On Windows, you might need to adjust the command structure or use `cmd /k` depending on your setup.)*
+Replace `YOUR_API_KEY` with your actual API key and adjust the path to `index.js` if necessary.
+
+Restart the MCP Client app after making the update in the configuration.
 
 ### Debugging the Server
 
-Execute `server.py`, providing the access token via the `--fb-token` argument.
+If you need to run the server directly:
 
 ```bash
-python server.py --fb-token YOUR_FACEBOOK_ACCESS_TOKEN
+node /path/to/your/install/directory/build/index.js
+```
+
+For the remote MCP server:
+
+```bash
+npx mcp-remote https://mcp.gomarble.ai/sse --header "Authorization: Bearer YOUR_API_KEY"
 ```
 
 ### Available MCP Tools
@@ -120,14 +122,15 @@ This MCP server provides tools for interacting with Facebook Ads objects and dat
 | `get_activities_by_adaccount`   | Retrieves change history for an ad account.              |
 | `get_activities_by_adset`       | Retrieves change history for an ad set.                  |
 
-*(Note: Most tools support additional parameters like `fields`, `filtering`, `limit`, pagination, date ranges, etc. Refer to the detailed docstrings within `server.py` for the full list and description of arguments for each tool.)*
+*(Note: Most tools support additional parameters like `fields`, `filtering`, `limit`, pagination, date ranges, etc. Refer to the detailed documentation in the tool descriptions.)*
 
-*(Note: If your Facebook access token expires, you'll need to generate a new one and update the configuration file of the MCP Client with new token to continue using the tools.)*
+*(Note: If your API key expires, you may need to generate a new one and update the configuration file of the MCP Client.)*
 
 ### Dependencies
 
-*   [mcp](https://pypi.org/project/mcp/) (>=1.6.0)
-*   [requests](https://pypi.org/project/requests/) (>=2.32.3)
+*   Node.js v16+
+*   [auth-mcp-tools](https://www.npmjs.com/package/auth-mcp-tools)
+*   [mcp-remote](https://www.npmjs.com/package/mcp-remote) (for remote server connectivity)
 
 ### License
 This project is licensed under the MIT License.
