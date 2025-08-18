@@ -1,5 +1,6 @@
 # Facebook/Meta Ads MCP Server
 
+[![Trust Score](https://archestra.ai/mcp-catalog/api/badge/quality/gomarble-ai/facebook-ads-mcp-server)](https://archestra.ai/mcp-catalog/gomarble-ai__facebook-ads-mcp-server)
 [![smithery badge](https://smithery.ai/badge/@gomarble-ai/facebook-ads-mcp-server)](https://smithery.ai/server/@gomarble-ai/facebook-ads-mcp-server)
 
 This project provides an MCP server acting as an interface to the Meta Ads, enabling programmatic access to Meta Ads data and management features.
