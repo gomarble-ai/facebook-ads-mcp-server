@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Any
 import json
 import requests
 import sys
+import os
 
     
 
@@ -28,17 +29,22 @@ FB_ACCESS_TOKEN = None
 
 def _get_fb_access_token() -> str:
     """
-    Get Facebook access token from command line arguments.
+    Get Facebook access token from environment or command line arguments.
     Caches the token in memory after first read.
 
     Returns:
         str: The Facebook access token.
 
     Raises:
-        Exception: If no token is provided in command line arguments.
+        Exception: If no token is provided.
     """
     global FB_ACCESS_TOKEN
     if FB_ACCESS_TOKEN is None:
+        env_token = os.environ.get("META_ACCESS_TOKEN")
+        if env_token:
+            FB_ACCESS_TOKEN = env_token
+            return FB_ACCESS_TOKEN
+
         # Look for --fb-token argument
         if "--fb-token" in sys.argv:
             token_index = sys.argv.index("--fb-token") + 1
@@ -48,7 +54,7 @@ def _get_fb_access_token() -> str:
             else:
                 raise Exception("--fb-token argument provided but no token value followed it")
         else:
-            raise Exception("Facebook token must be provided via '--fb-token' command line argument")
+            raise Exception("Facebook token must be provided via META_ACCESS_TOKEN or '--fb-token' command line argument")
 
     return FB_ACCESS_TOKEN
 
@@ -2294,4 +2300,3 @@ def get_activities_by_adset(
 if __name__ == "__main__":
     _get_fb_access_token()
     mcp.run(transport='stdio')
-    
