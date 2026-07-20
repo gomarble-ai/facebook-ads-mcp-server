@@ -5,6 +5,7 @@ from typing import Dict, List, Optional, Any
 import json
 import requests
 import sys
+from urllib.parse import urlsplit
 
     
 
@@ -814,7 +815,27 @@ def fetch_pagination_url(url: str) -> Dict:
     """
     # This function takes a full URL which already includes the access token,
     # so we don't use the _make_graph_api_call helper here.
-    response = requests.get(url)
+    if any(ord(character) <= 0x20 or ord(character) == 0x7F for character in url):
+        raise ValueError("Pagination URL must not contain spaces or control characters")
+
+    try:
+        parsed_url = urlsplit(url)
+        port = parsed_url.port
+    except ValueError as exc:
+        raise ValueError("Invalid Facebook Graph API pagination URL") from exc
+
+    if (
+        parsed_url.scheme.lower() != "https"
+        or parsed_url.hostname != "graph.facebook.com"
+        or port not in (None, 443)
+        or parsed_url.username is not None
+        or parsed_url.password is not None
+    ):
+        raise ValueError(
+            "Pagination URL must use HTTPS and target graph.facebook.com"
+        )
+
+    response = requests.get(url, allow_redirects=False, timeout=30)
     response.raise_for_status()
     return response.json()
 
@@ -2294,4 +2315,3 @@ def get_activities_by_adset(
 if __name__ == "__main__":
     _get_fb_access_token()
     mcp.run(transport='stdio')
-    
