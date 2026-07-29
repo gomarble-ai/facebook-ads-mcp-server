@@ -53,18 +53,30 @@ def _get_fb_access_token() -> str:
 
     return FB_ACCESS_TOKEN
 
+def _redact_token(text: str, token: Optional[str]) -> str:
+    """Strip a secret value out of a string before it's logged or surfaced to a caller."""
+    if token:
+        text = text.replace(token, "***REDACTED***")
+    return text
+
+
 def _make_graph_api_call(url: str, params: Dict[str, Any]) -> Dict:
     """Makes a GET request to the Facebook Graph API and handles the response."""
+    token = params.get('access_token')
     try:
         response = requests.get(url, params=params)
         response.raise_for_status()  # Raises HTTPError for bad responses (4xx or 5xx)
         return response.json()
     except requests.exceptions.RequestException as e:
-        # Log the error and re-raise or handle more gracefully
-        print(f"Error making Graph API call to {url} with params {params}: {e}")
-        # Depending on desired behavior, you might want to raise a custom exception
-        # or return a specific error structure. Re-raising keeps the current behavior.
-        raise
+        # Never log/raise the raw params or exception: both the params dict and
+        # requests' own HTTPError message (which embeds the full request URL,
+        # access_token included, via response.url) can leak the token to local
+        # logs and to whatever surfaces the exception message upstream (e.g. an
+        # MCP client). Redact before doing either.
+        safe_params = {k: ('***REDACTED***' if k == 'access_token' else v) for k, v in params.items()}
+        safe_message = _redact_token(str(e), token)
+        print(f"Error making Graph API call to {url} with params {safe_params}: {safe_message}")
+        raise requests.exceptions.RequestException(safe_message) from None
 
 
 def _prepare_params(base_params: Dict[str, Any], **kwargs) -> Dict[str, Any]:
