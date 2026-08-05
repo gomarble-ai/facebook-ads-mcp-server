@@ -1,3 +1,5 @@
+[![MseeP.ai Security Assessment Badge](https://mseep.net/pr/gomarble-ai-facebook-ads-mcp-server-badge.png)](https://mseep.ai/app/gomarble-ai-facebook-ads-mcp-server)
+
 # Facebook/Meta Ads MCP Server
 
 [![Trust Score](https://archestra.ai/mcp-catalog/api/badge/quality/gomarble-ai/facebook-ads-mcp-server)](https://archestra.ai/mcp-catalog/gomarble-ai__facebook-ads-mcp-server)
