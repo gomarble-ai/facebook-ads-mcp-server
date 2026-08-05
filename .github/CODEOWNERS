@@ -1,0 +1,16 @@
+# Code owners for this public repository.
+#
+# Every pull request to the default branch needs an approving review from the
+# internal maintainers team. Outside contributors can fork and open PRs, but
+# only this team can satisfy the review requirement — and that stays true even
+# if someone outside the org is later granted write access, which a plain
+# "1 approval" rule would not guarantee.
+#
+# A team is used rather than individual accounts so that membership changes in
+# one place when people join or leave. GitHub silently ignores a code owner
+# that has lost write access, so a list of individuals rots without warning.
+#
+# Requirements for this to work: the team must be visible (not secret) and must
+# have write access to this repo. Both are configured.
+
+*  @gomarble-ai/maintainers
