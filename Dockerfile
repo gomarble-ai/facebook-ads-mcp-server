@@ -11,5 +11,8 @@ COPY . ./
 
 # Expose port if needed, though MCP uses stdio
 
-# Command to run the MCP server. The Facebook token must be provided via --fb-token argument.
-CMD ["python", "server.py", "--fb-token", "dummy_facebook_access_token"]
+# Command to run the MCP server. Provide the Facebook token via the FB_ACCESS_TOKEN
+# environment variable (e.g. `docker run -e FB_ACCESS_TOKEN=... <image>`) so it does
+# not appear in the container's command line.
+ENV FB_ACCESS_TOKEN=""
+CMD ["python", "server.py"]

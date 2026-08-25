@@ -13,7 +13,9 @@ startCommand:
         description: Facebook Access Token to be used with the server.
   commandFunction:
     # A JS function that produces the CLI command based on the given config to start the MCP on stdio.
+    # The token is passed via the FB_ACCESS_TOKEN environment variable instead of a command line
+    # argument so it does not show up in process listings (ps).
     |-
-    (config) => ({ command: 'python', args: ['server.py', '--fb-token', config.fbToken] })
+    (config) => ({ command: 'python', args: ['server.py'], env: { FB_ACCESS_TOKEN: config.fbToken } })
   exampleConfig:
     fbToken: dummy_facebook_access_token

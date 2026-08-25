@@ -59,9 +59,17 @@ GoMarble **does not store** your token — it is saved locally on your machine f
     ```
 3.  **Obtain Meta Access Token:** Secure a Meta User Access Token with the necessary permissions (e.g., `ads_read`). You can generate this through the Meta Developer portal. Follow [this link](https://elfsight.com/blog/how-to-get-facebook-access-token/).
 
+### Providing the Access Token
+
+The server looks for the token in the following order:
+
+1.  `--fb-token <token>` command line argument — **deprecated**: the token value is visible in process listings (`ps`) and tends to be recorded in shell history and client configuration files. Kept for backward compatibility only.
+2.  `--fb-token-file <path>` command line argument — **recommended**: path to a file containing just the token (surrounding whitespace is ignored). Only the path appears in the process listing and client configuration; protect the file itself (e.g. `chmod 600`).
+3.  `FB_ACCESS_TOKEN` environment variable — recommended alternative when your client or container platform can pass environment variables (env vars are not visible in `ps`, but note that many MCP clients store configured env values in their config files).
+
 ### Usage with MCP Clients (e.g., Cursor, Claude Desktop)
 
-To integrate this server with an MCP-compatible client, add a configuration([Claude](https://modelcontextprotocol.io/quickstart/user#2-add-the-filesystem-mcp-server)) similar to the following. Replace `YOUR_META_ACCESS_TOKEN` with your actual token and adjust the path to `server.py` if necessary.
+To integrate this server with an MCP-compatible client, add a configuration([Claude](https://modelcontextprotocol.io/quickstart/user#2-add-the-filesystem-mcp-server)) similar to the following. Put your token in a file (e.g. `~/.fb_access_token`) and adjust the path to `server.py` if necessary.
 
 ```json
 {
@@ -70,16 +78,18 @@ To integrate this server with an MCP-compatible client, add a configuration([Cla
       "command": "python",
       "args": [
         "/path/to/your/fb-ads-mcp-server/server.py",
-        "--fb-token",
-        "YOUR_META_ACCESS_TOKEN"
+        "--fb-token-file",
+        "/path/to/your/.fb_access_token"
       ]
+      // Alternatively, pass the token via the environment instead of a file:
+      // "args": ["/path/to/your/fb-ads-mcp-server/server.py"],
+      // "env": { "FB_ACCESS_TOKEN": "YOUR_META_ACCESS_TOKEN" }
+      //
       // If using a virtual environment, you might need to specify the python executable within the venv:
       // "command": "/path/to/your/fb-ads-mcp-server/venv/bin/python",
-      // "args": [
-      //   "/path/to/your/fb-ads-mcp-server/server.py",
-      //   "--fb-token",
-      //   "YOUR_META_ACCESS_TOKEN"
-      // ]
+      //
+      // Passing the token directly on the command line still works but is deprecated:
+      // "args": ["/path/to/your/fb-ads-mcp-server/server.py", "--fb-token", "YOUR_META_ACCESS_TOKEN"]
     }
   }
 }
@@ -90,9 +100,13 @@ Restart the MCP Client app after making the update in the configuration.
 
 ### Debugging the Server
 
-Execute `server.py`, providing the access token via the `--fb-token` argument.
+Execute `server.py`, providing the access token via a token file (or the `FB_ACCESS_TOKEN` environment variable).
 
 ```bash
+python server.py --fb-token-file ~/.fb_access_token
+# or:
+FB_ACCESS_TOKEN=YOUR_META_ACCESS_TOKEN python server.py
+# deprecated (token visible in `ps` and shell history):
 python server.py --fb-token YOUR_META_ACCESS_TOKEN
 ```
 

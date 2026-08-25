@@ -3,6 +3,7 @@ from mcp.server.fastmcp import FastMCP
 import requests
 from typing import Dict, List, Optional, Any
 import json
+import os
 import requests
 import sys
 from urllib.parse import urlsplit
@@ -29,27 +30,66 @@ FB_ACCESS_TOKEN = None
 
 def _get_fb_access_token() -> str:
     """
-    Get Facebook access token from command line arguments.
+    Get the Facebook access token. Sources are checked in priority order:
+
+    1. ``--fb-token <token>`` command line argument (deprecated: the token is
+       visible in process listings such as ``ps`` and tends to be recorded in
+       shell history and client configuration files);
+    2. ``--fb-token-file <path>`` command line argument — path to a file whose
+       contents are the token (surrounding whitespace is stripped);
+    3. ``FB_ACCESS_TOKEN`` environment variable.
+
     Caches the token in memory after first read.
 
     Returns:
         str: The Facebook access token.
 
     Raises:
-        Exception: If no token is provided in command line arguments.
+        Exception: If no token is provided by any of the supported sources.
     """
     global FB_ACCESS_TOKEN
     if FB_ACCESS_TOKEN is None:
-        # Look for --fb-token argument
+        # 1. Look for --fb-token argument (deprecated, kept for backward compatibility)
         if "--fb-token" in sys.argv:
             token_index = sys.argv.index("--fb-token") + 1
             if token_index < len(sys.argv):
                 FB_ACCESS_TOKEN = sys.argv[token_index]
-                print(f"Using Facebook token from command line arguments")
+                print(
+                    "Using Facebook token from command line arguments. "
+                    "WARNING: passing the token via --fb-token is deprecated because the "
+                    "value is visible in process listings (ps) and may be recorded in "
+                    "shell history and client configuration files. Prefer "
+                    "--fb-token-file or the FB_ACCESS_TOKEN environment variable.",
+                    file=sys.stderr,
+                )
             else:
                 raise Exception("--fb-token argument provided but no token value followed it")
+        # 2. Look for --fb-token-file argument (recommended)
+        elif "--fb-token-file" in sys.argv:
+            path_index = sys.argv.index("--fb-token-file") + 1
+            if path_index < len(sys.argv):
+                try:
+                    with open(sys.argv[path_index], "r", encoding="utf-8") as token_file:
+                        FB_ACCESS_TOKEN = token_file.read().strip()
+                except OSError:
+                    raise Exception(
+                        "--fb-token-file argument provided but the token file could not be read"
+                    ) from None
+                if not FB_ACCESS_TOKEN:
+                    raise Exception("--fb-token-file argument provided but the token file is empty")
+                print("Using Facebook token from token file", file=sys.stderr)
+            else:
+                raise Exception("--fb-token-file argument provided but no file path followed it")
+        # 3. Fall back to the FB_ACCESS_TOKEN environment variable
+        elif os.environ.get("FB_ACCESS_TOKEN", "").strip():
+            FB_ACCESS_TOKEN = os.environ["FB_ACCESS_TOKEN"].strip()
+            print("Using Facebook token from FB_ACCESS_TOKEN environment variable", file=sys.stderr)
         else:
-            raise Exception("Facebook token must be provided via '--fb-token' command line argument")
+            raise Exception(
+                "Facebook token must be provided via the '--fb-token-file <path>' command line "
+                "argument, the FB_ACCESS_TOKEN environment variable, or the deprecated "
+                "'--fb-token <token>' command line argument"
+            )
 
     return FB_ACCESS_TOKEN
 
@@ -378,7 +418,7 @@ def get_adaccount_insights(
         next_page_url = insights.get("paging", {}).get("next")
         if next_page_url:
             next_page_results = fetch_pagination_url(url=next_page_url)
-            print("Fetched next page results.")
+            print("Fetched next page results.", file=sys.stderr)
         ```
     """
     access_token = _get_fb_access_token()

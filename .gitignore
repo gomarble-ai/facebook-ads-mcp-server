@@ -1,2 +1,5 @@
 lib/
 facebook-ads-mcp-server.dxt
+# Never commit token files (see --fb-token-file in the readme)
+.fb_access_token
+*.token

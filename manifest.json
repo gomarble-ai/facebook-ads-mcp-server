@@ -17,11 +17,10 @@
     "mcp_config": {
       "command": "python",
       "args": [
-        "${__dirname}/server.py",
-        "--fb-token",
-        "${user_config.facebook_access_token}"
+        "${__dirname}/server.py"
       ],
       "env": {
+        "FB_ACCESS_TOKEN": "${user_config.facebook_access_token}",
         "DEBUG": "${user_config.debug_mode}",
         "PYTHONPATH": "${__dirname}/lib"
       },
