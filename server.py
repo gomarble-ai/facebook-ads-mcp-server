@@ -3,9 +3,10 @@ from mcp.server.fastmcp import FastMCP
 import requests
 from typing import Dict, List, Optional, Any
 import json
+import re
 import requests
 import sys
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
     
 
@@ -57,7 +58,28 @@ def _redact_token(text: str, token: Optional[str]) -> str:
     """Strip a secret value out of a string before it's logged or surfaced to a caller."""
     if token:
         text = text.replace(token, "***REDACTED***")
+        # requests percent-encodes query values, so the same token may also
+        # appear in URL-quoted form inside request URLs and error messages.
+        text = text.replace(quote(token, safe=""), "***REDACTED***")
+    # Fallback for token-bearing URLs we did not build ourselves (e.g. Graph
+    # pagination URLs carry the access token in their query string): redact
+    # whatever value follows an access_token= parameter.
+    text = re.sub(r"(access_token=)[^&\s'\"]+", r"\1***REDACTED***", text)
     return text
+
+
+def _redact_exception(exc: BaseException, token: Optional[str]) -> None:
+    """Rewrite an exception's args in place so its message no longer carries the token.
+
+    Rewriting in place (instead of raising a new exception) keeps the exception
+    type, its ``response``/``request`` attributes and the original traceback
+    intact for callers that inspect them.
+    """
+    if exc.args:
+        exc.args = tuple(
+            _redact_token(arg, token) if isinstance(arg, str) else arg
+            for arg in exc.args
+        )
 
 
 def _make_graph_api_call(url: str, params: Dict[str, Any]) -> Dict:
@@ -74,9 +96,16 @@ def _make_graph_api_call(url: str, params: Dict[str, Any]) -> Dict:
         # logs and to whatever surfaces the exception message upstream (e.g. an
         # MCP client). Redact before doing either.
         safe_params = {k: ('***REDACTED***' if k == 'access_token' else v) for k, v in params.items()}
-        safe_message = _redact_token(str(e), token)
-        print(f"Error making Graph API call to {url} with params {safe_params}: {safe_message}")
-        raise requests.exceptions.RequestException(safe_message) from None
+        _redact_exception(e, token)
+        # Diagnostics go to stderr: the server runs on the stdio transport, so
+        # stdout is the JSON-RPC channel and must stay clean.
+        print(f"Error making Graph API call to {url} with params {safe_params}: {e}",
+              file=sys.stderr)
+        # Re-raise the original exception (its args are already redacted in
+        # place) rather than a fresh RequestException: callers keep the specific
+        # type (e.g. HTTPError), the response/request attributes and the
+        # original traceback.
+        raise
 
 
 def _prepare_params(base_params: Dict[str, Any], **kwargs) -> Dict[str, Any]:
@@ -848,7 +877,15 @@ def fetch_pagination_url(url: str) -> Dict:
         )
 
     response = requests.get(url, allow_redirects=False, timeout=30)
-    response.raise_for_status()
+    try:
+        response.raise_for_status()
+    except requests.exceptions.RequestException as e:
+        # Pagination URLs issued by the Graph API embed the access token in
+        # their query string, and raise_for_status() builds its message from
+        # the fully-resolved URL — redact before the exception text reaches
+        # logs or the MCP client.
+        _redact_exception(e, FB_ACCESS_TOKEN)
+        raise
     return response.json()
 
 
